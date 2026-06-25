@@ -8,7 +8,7 @@
 
 Este procedimiento describe el paso a paso para instalar **IBM Instana Self-Hosted Standard Edition** en un único servidor Linux usando `stanctl`, en modalidad **online**.
 
-El documento está pensado para que un usuario pueda seguir los comandos de instalación de forma ordenada. Las salidas mostradas en cada paso son **evidencias referenciales** obtenidas durante una instalación real de laboratorio; no es necesario que el usuario genere archivos de evidencia ni guarde logs en rutas específicas para completar la instalación.
+El documento está pensado para que un usuario administrador pueda seguir los comandos de instalación de forma ordenada. Las salidas mostradas en cada paso son **evidencias referenciales** obtenidas durante una instalación real de laboratorio; no es necesario que el usuario genere archivos de evidencia ni guarde logs en rutas específicas para completar la instalación.
 
 El procedimiento cubre dos escenarios de almacenamiento:
 
