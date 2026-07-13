@@ -24,6 +24,9 @@ No utilizar este perfil como arquitectura productiva.
 
 ## 2. Ambiente validado
 
+> **EVIDENCIA DEL LABORATORIO ORIGINAL — NO COPIAR LOS VALORES COMO SI FUERAN UNIVERSALES.**  
+> Este ambiente demuestra el resultado obtenido. En otra VM cambiarán el hostname, IP privada, Floating IP, puerto SSH y posiblemente el nombre del disco adicional.
+
 ```text
 Sistema operativo: Ubuntu 22.04.5 LTS
 Hostname Linux: itzvsi-6920008uok-a2mgsfyz
@@ -40,23 +43,25 @@ Unit: unit0
 Tipo: demo
 ```
 
-Base domain usado en la primera instalación:
+Base domain usado en ese laboratorio:
 
 ```text
 itzvsi-6920008uok-a2mgsfyz.local
 ```
 
-Este nombre funciona mediante entradas en `/etc/hosts`, pero para una nueva publicación formal se recomienda usar un dominio real, por ejemplo:
+El manual no reutiliza esos valores de manera fija. En las siguientes secciones se descubren y guardan como variables los datos reales del servidor donde se ejecutará el procedimiento.
+
+Para una publicación formal se recomienda un dominio real administrado, por ejemplo:
 
 ```text
 instana-lab.example.com
 ```
 
----
-
 ## 3. Tres nombres distintos
 
 ### 3.1 Hostname Linux
+
+Es el nombre del sistema operativo:
 
 ```bash
 hostnamectl --static
@@ -64,20 +69,16 @@ hostname
 hostname -f
 ```
 
-Resultado observado:
-
-```text
-itzvsi-6920008uok-a2mgsfyz
-```
-
 ### 3.2 Nodo Kubernetes
+
+Después de instalar:
 
 ```bash
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 kubectl get nodes
 ```
 
-Resultado:
+Normalmente se observa el nodo:
 
 ```text
 instana-0
@@ -85,32 +86,205 @@ instana-0
 
 ### 3.3 Base domain de Instana
 
-Instalación actual:
+Es el nombre utilizado por la consola, agentes y endpoints OTLP. No es obligatorio que coincida con el hostname Linux.
 
-```text
-itzvsi-6920008uok-a2mgsfyz.local
-```
+La instalación conserva ese valor dentro del recurso `Core` y de su certificado. Modificar únicamente `/etc/hosts` o `.env` no cambia el dominio de una instalación existente.
 
-No es obligatorio que coincida con el hostname Linux.
+> `hostname -f` puede aportar un candidato, pero el dominio definitivo debe coincidir con el DNS y certificado planificados.
 
-Para una nueva instalación pública:
+### 3.4 Descubrir, exportar y guardar las variables del ambiente
 
-```text
-instana-lab.example.com
-```
+Ejecutar **todo el bloque completo en una sola sesión Bash como `root`**. El procedimiento:
 
-La instalación actual conserva el base domain `.local` dentro del recurso `Core` y de su certificado. Modificar únicamente `/etc/hosts` o el archivo `.env` no cambia el dominio de una instalación existente. Para usar otro FQDN de forma limpia, definirlo antes de una nueva instalación o aplicar un procedimiento de reconfiguración soportado.
+1. descubre hostname, FQDN, IP privada y puerto SSH;
+2. recupera el dominio, tenant y unit si Instana ya existe;
+3. solicita confirmación de los valores;
+4. exporta las variables para la sesión actual;
+5. las guarda en un archivo reutilizable para sesiones posteriores.
 
-> No cambiar el hostname Linux de un sistema ya instalado sin una evaluación. Para una nueva VM, establecer un hostname estable antes de ejecutar `stanctl up`.
-
-Ejemplo para una VM nueva:
+> `export` hace que una variable esté disponible para los procesos ejecutados desde la shell actual. No la conserva después de cerrar la sesión. Por ello, además se genera `/root/instana-install/instana-vars.env`; en una nueva sesión se debe ejecutar `source` explícitamente.
 
 ```bash
-hostnamectl set-hostname instana-lab-01
-hostnamectl
+mkdir -p /root/instana-install
+chmod 700 /root/instana-install
+
+# Si k3s ya está instalado, kubectl necesita recibir KUBECONFIG como
+# variable de entorno. Por eso esta variable sí se exporta.
+if [ -f /etc/rancher/k3s/k3s.yaml ]; then
+  export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+fi
+
+# 1. Variables descubiertas del sistema operativo.
+export HOST_SHORT="$(hostnamectl --static 2>/dev/null || hostname -s)"
+export HOST_FQDN="$(hostname -f 2>/dev/null || true)"
+
+export PRIVATE_IP="$(
+  ip -4 route get 1.1.1.1 2>/dev/null |
+  awk '{for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}'
+)"
+
+# Fallback cuando la ruta principal no devuelve el atributo src.
+if [ -z "$PRIVATE_IP" ]; then
+  export PRIVATE_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+fi
+
+export SSH_PORT="$(
+  sshd -T 2>/dev/null |
+  awk '$1=="port" {print $2; exit}'
+)"
+export SSH_PORT="${SSH_PORT:-22}"
+
+# 2. Valores existentes de Instana, si el backend ya fue instalado.
+EXISTING_BASE_DOMAIN=""
+EXISTING_TENANT_NAME=""
+EXISTING_UNIT_NAME=""
+
+if command -v kubectl >/dev/null 2>&1 && \
+   kubectl get core instana-core -n instana-core >/dev/null 2>&1; then
+  EXISTING_BASE_DOMAIN="$(
+    kubectl get core instana-core -n instana-core \
+      -o jsonpath='{.spec.baseDomain}'
+  )"
+fi
+
+if command -v kubectl >/dev/null 2>&1 && \
+   kubectl get unit instana-unit -n instana-unit >/dev/null 2>&1; then
+  EXISTING_TENANT_NAME="$(
+    kubectl get unit instana-unit -n instana-unit \
+      -o jsonpath='{.spec.tenantName}'
+  )"
+  EXISTING_UNIT_NAME="$(
+    kubectl get unit instana-unit -n instana-unit \
+      -o jsonpath='{.spec.unitName}'
+  )"
+fi
+
+# 3. Proponer valores. Los candidatos son variables auxiliares locales;
+# no necesitan exportarse porque solo se utilizan dentro de este bloque.
+if [ -n "$EXISTING_BASE_DOMAIN" ]; then
+  BASE_DOMAIN_CANDIDATE="$EXISTING_BASE_DOMAIN"
+elif [[ "$HOST_FQDN" == *.* ]] && \
+     [[ "$HOST_FQDN" != localhost* ]]; then
+  BASE_DOMAIN_CANDIDATE="$HOST_FQDN"
+else
+  BASE_DOMAIN_CANDIDATE="${HOST_SHORT}.local"
+fi
+
+TENANT_NAME_CANDIDATE="${EXISTING_TENANT_NAME:-tenant0}"
+UNIT_NAME_CANDIDATE="${EXISTING_UNIT_NAME:-unit0}"
+
+printf '\n%-24s %s\n' 'Hostname Linux:' "$HOST_SHORT"
+printf '%-24s %s\n' 'hostname -f:' "${HOST_FQDN:-<sin FQDN>}"
+printf '%-24s %s\n' 'IP privada detectada:' "$PRIVATE_IP"
+printf '%-24s %s\n' 'Puerto SSH detectado:' "$SSH_PORT"
+printf '%-24s %s\n' 'Base domain candidato:' "$BASE_DOMAIN_CANDIDATE"
+printf '%-24s %s\n' 'Tenant candidato:' "$TENANT_NAME_CANDIDATE"
+printf '%-24s %s\n\n' 'Unit candidata:' "$UNIT_NAME_CANDIDATE"
+
+# 4. Confirmar el base domain definitivo.
+while :; do
+  read -r -p \
+    "Base domain de Instana [$BASE_DOMAIN_CANDIDATE]: " \
+    INPUT_BASE_DOMAIN
+  BASE_DOMAIN="${INPUT_BASE_DOMAIN:-$BASE_DOMAIN_CANDIDATE}"
+
+  if [[ "$BASE_DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] && \
+     [[ "$BASE_DOMAIN" == *.* ]]; then
+    export BASE_DOMAIN
+    break
+  fi
+
+  echo "Formato inválido. Ingrese un FQDN, por ejemplo instana-lab.example.com."
+done
+
+# 5. Confirmar tenant y unit.
+while :; do
+  read -r -p \
+    "Tenant [$TENANT_NAME_CANDIDATE]: " \
+    INPUT_TENANT_NAME
+  TENANT_NAME="${INPUT_TENANT_NAME:-$TENANT_NAME_CANDIDATE}"
+
+  if [[ "$TENANT_NAME" =~ ^[a-z][a-z0-9-]{0,14}$ ]]; then
+    export TENANT_NAME
+    break
+  fi
+
+  echo "Tenant inválido: use minúsculas, empiece con letra y máximo 15 caracteres."
+done
+
+while :; do
+  read -r -p \
+    "Unit [$UNIT_NAME_CANDIDATE]: " \
+    INPUT_UNIT_NAME
+  UNIT_NAME="${INPUT_UNIT_NAME:-$UNIT_NAME_CANDIDATE}"
+
+  if [[ "$UNIT_NAME" =~ ^[a-z][a-z0-9-]{0,14}$ ]]; then
+    export UNIT_NAME
+    break
+  fi
+
+  echo "Unit inválida: use minúsculas, empiece con letra y máximo 15 caracteres."
+done
+
+# 6. Confirmar la IP privada si no pudo descubrirse.
+while [[ ! "$PRIVATE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; do
+  echo "No se pudo determinar automáticamente una IPv4 privada."
+  read -r -p "Ingrese la IPv4 privada del servidor: " PRIVATE_IP
+  export PRIVATE_IP
+done
+
+# 7. Derivar y exportar los FQDN utilizados por Instana.
+export UNIT_FQDN="${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}"
+export AGENT_FQDN="agent-acceptor.${BASE_DOMAIN}"
+export OPAMP_FQDN="opamp-acceptor.${BASE_DOMAIN}"
+export OTLP_HTTP_FQDN="otlp-http.${BASE_DOMAIN}"
+export OTLP_GRPC_FQDN="otlp-grpc.${BASE_DOMAIN}"
+
+# 8. Guardar comandos export para poder recuperar las variables en otra sesión.
+{
+  printf 'export HOST_SHORT=%q\n' "$HOST_SHORT"
+  printf 'export HOST_FQDN=%q\n' "$HOST_FQDN"
+  printf 'export PRIVATE_IP=%q\n' "$PRIVATE_IP"
+  printf 'export SSH_PORT=%q\n' "$SSH_PORT"
+  printf 'export BASE_DOMAIN=%q\n' "$BASE_DOMAIN"
+  printf 'export TENANT_NAME=%q\n' "$TENANT_NAME"
+  printf 'export UNIT_NAME=%q\n' "$UNIT_NAME"
+  printf 'export UNIT_FQDN=%q\n' "$UNIT_FQDN"
+  printf 'export AGENT_FQDN=%q\n' "$AGENT_FQDN"
+  printf 'export OPAMP_FQDN=%q\n' "$OPAMP_FQDN"
+  printf 'export OTLP_HTTP_FQDN=%q\n' "$OTLP_HTTP_FQDN"
+  printf 'export OTLP_GRPC_FQDN=%q\n' "$OTLP_GRPC_FQDN"
+} > /root/instana-install/instana-vars.env
+
+chmod 600 /root/instana-install/instana-vars.env
+
+# 9. Verificar el archivo y las variables exportadas en la sesión actual.
+printf '\nVariables guardadas en /root/instana-install/instana-vars.env\n\n'
+printf '%-24s %s\n' \
+  'HOST_SHORT:' "$HOST_SHORT" \
+  'HOST_FQDN:' "${HOST_FQDN:-<sin FQDN>}" \
+  'PRIVATE_IP:' "$PRIVATE_IP" \
+  'SSH_PORT:' "$SSH_PORT" \
+  'BASE_DOMAIN:' "$BASE_DOMAIN" \
+  'TENANT_NAME:' "$TENANT_NAME" \
+  'UNIT_NAME:' "$UNIT_NAME" \
+  'UNIT_FQDN:' "$UNIT_FQDN"
 ```
 
----
+En **cada nueva sesión SSH**, ejecutar antes de usar estas variables:
+
+```bash
+source /root/instana-install/instana-vars.env
+```
+
+Confirmar que quedaron exportadas:
+
+```bash
+env | grep -E \
+'^(HOST_SHORT|HOST_FQDN|PRIVATE_IP|SSH_PORT|BASE_DOMAIN|TENANT_NAME|UNIT_NAME|UNIT_FQDN|AGENT_FQDN|OPAMP_FQDN|OTLP_HTTP_FQDN|OTLP_GRPC_FQDN)='
+```
+
+> El archivo `instana-vars.env` no contiene claves ni contraseñas. Las variables auxiliares como `HOSTS_FILE`, `HOSTS_TMP`, `PATH_TO_CHECK` o `RECONCILE_ID` no se exportan porque solo se utilizan dentro del bloque en el que se crean.
 
 ## 4. Claves
 
@@ -145,137 +319,307 @@ apt/yum repository
 
 ---
 
-## 5. Variables del laboratorio
+## 5. Variables del ambiente
+
+Las variables se crearon en la sección 3.4. No volver a escribir manualmente el hostname, IP o dominio. Cada bloque que las utiliza incluye el comando `source`; no debe omitirse al iniciar una nueva sesión.
+
+Cargar:
 
 ```bash
-export PRIVATE_IP="10.240.1.161"
-export PUBLIC_IP="<FLOATING_IP_PUBLICA>"
-export SSH_PORT="2223"
-
-# Instalación actual:
-export BASE_DOMAIN="itzvsi-6920008uok-a2mgsfyz.local"
-
-# Recomendado para una instalación nueva:
-# export BASE_DOMAIN="instana-lab.example.com"
-
-export TENANT_NAME="tenant0"
-export UNIT_NAME="unit0"
+source /root/instana-install/instana-vars.env
 ```
 
-La Floating IP se debe confirmar en IBM Cloud:
+Mostrar:
 
-```text
-VPC Infrastructure
-Virtual server instances
-Network interfaces
-Floating IP
+```bash
+source /root/instana-install/instana-vars.env
+
+printf '%-24s %s\n' \
+  'Hostname:' "$HOST_SHORT" \
+  'FQDN Linux:' "${HOST_FQDN:-<sin FQDN>}" \
+  'IP privada:' "$PRIVATE_IP" \
+  'Puerto SSH:' "$SSH_PORT" \
+  'Base domain:' "$BASE_DOMAIN" \
+  'Tenant:' "$TENANT_NAME" \
+  'Unit:' "$UNIT_NAME" \
+  'Unit FQDN:' "$UNIT_FQDN"
 ```
 
-Este comando solo muestra la IP de salida y puede no ser la Floating IP de ingreso:
+La Floating IP debe confirmarse en la consola cloud. No asumir que esta consulta devuelve la IP de entrada:
 
 ```bash
 curl -4 -s https://api.ipify.org ; echo
 ```
 
----
+Puede devolver únicamente una IP NAT de salida.
 
 ## 6. DNS y archivo `hosts`
 
 ### 6.1 Nombres requeridos
 
-```text
-${BASE_DOMAIN}
-${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}
-agent-acceptor.${BASE_DOMAIN}
-opamp-acceptor.${BASE_DOMAIN}
-otlp-http.${BASE_DOMAIN}
-otlp-grpc.${BASE_DOMAIN}
+```bash
+source /root/instana-install/instana-vars.env
+
+printf '%s\n' \
+  "$BASE_DOMAIN" \
+  "$UNIT_FQDN" \
+  "$AGENT_FQDN" \
+  "$OPAMP_FQDN" \
+  "$OTLP_HTTP_FQDN" \
+  "$OTLP_GRPC_FQDN"
 ```
 
-Para la instalación actual:
+### 6.2 Agregar los nombres en el servidor Ubuntu
 
-```text
-itzvsi-6920008uok-a2mgsfyz.local
-unit0-tenant0.itzvsi-6920008uok-a2mgsfyz.local
-agent-acceptor.itzvsi-6920008uok-a2mgsfyz.local
-opamp-acceptor.itzvsi-6920008uok-a2mgsfyz.local
-otlp-http.itzvsi-6920008uok-a2mgsfyz.local
-otlp-grpc.itzvsi-6920008uok-a2mgsfyz.local
-```
-
-### 6.2 En el servidor Ubuntu
-
-Usar la IP privada:
+Usar la IP privada detectada. El bloque reemplaza solo entradas administradas por el manual:
 
 ```bash
-cat >> /etc/hosts <<'EOF'
-10.240.1.161 itzvsi-6920008uok-a2mgsfyz.local
-10.240.1.161 unit0-tenant0.itzvsi-6920008uok-a2mgsfyz.local
-10.240.1.161 agent-acceptor.itzvsi-6920008uok-a2mgsfyz.local
-10.240.1.161 opamp-acceptor.itzvsi-6920008uok-a2mgsfyz.local
-10.240.1.161 otlp-http.itzvsi-6920008uok-a2mgsfyz.local
-10.240.1.161 otlp-grpc.itzvsi-6920008uok-a2mgsfyz.local
+source /root/instana-install/instana-vars.env
+
+HOSTS_FILE="/etc/hosts"
+HOSTS_BACKUP="/etc/hosts.backup.$(date +%Y%m%d-%H%M%S)"
+HOSTS_TMP="$(mktemp)"
+
+cp -p "$HOSTS_FILE" "$HOSTS_BACKUP"
+
+awk '
+  /^# BEGIN INSTANA-MANAGED$/ {skip=1; next}
+  /^# END INSTANA-MANAGED$/   {skip=0; next}
+  !skip {print}
+' "$HOSTS_FILE" > "$HOSTS_TMP"
+
+cat >> "$HOSTS_TMP" <<EOF
+# BEGIN INSTANA-MANAGED
+${PRIVATE_IP} ${BASE_DOMAIN}
+${PRIVATE_IP} ${UNIT_FQDN}
+${PRIVATE_IP} ${AGENT_FQDN}
+${PRIVATE_IP} ${OPAMP_FQDN}
+${PRIVATE_IP} ${OTLP_HTTP_FQDN}
+${PRIVATE_IP} ${OTLP_GRPC_FQDN}
+# END INSTANA-MANAGED
 EOF
-```
 
-Evitar duplicados:
-
-```bash
-grep 'itzvsi-6920008uok-a2mgsfyz.local' /etc/hosts
-```
-
-### 6.3 En una laptop macOS
-
-Sustituir `<PUBLIC_IP>`:
-
-```text
-<PUBLIC_IP> itzvsi-6920008uok-a2mgsfyz.local
-<PUBLIC_IP> unit0-tenant0.itzvsi-6920008uok-a2mgsfyz.local
-<PUBLIC_IP> agent-acceptor.itzvsi-6920008uok-a2mgsfyz.local
-<PUBLIC_IP> opamp-acceptor.itzvsi-6920008uok-a2mgsfyz.local
-<PUBLIC_IP> otlp-http.itzvsi-6920008uok-a2mgsfyz.local
-<PUBLIC_IP> otlp-grpc.itzvsi-6920008uok-a2mgsfyz.local
-```
-
-Editar:
-
-```bash
-sudo cp /etc/hosts "/etc/hosts.backup.$(date +%Y%m%d-%H%M%S)"
-sudo nano /etc/hosts
-```
-
-Limpiar caché:
-
-```bash
-sudo dscacheutil -flushcache
-sudo killall -HUP mDNSResponder
+cat "$HOSTS_TMP" > "$HOSTS_FILE"
+rm -f "$HOSTS_TMP"
 ```
 
 Validar:
 
 ```bash
-grep 'itzvsi-6920008uok-a2mgsfyz.local' /etc/hosts
-dscacheutil -q host -a name unit0-tenant0.itzvsi-6920008uok-a2mgsfyz.local
+source /root/instana-install/instana-vars.env
+
+for NAME in \
+  "$BASE_DOMAIN" \
+  "$UNIT_FQDN" \
+  "$AGENT_FQDN" \
+  "$OPAMP_FQDN" \
+  "$OTLP_HTTP_FQDN" \
+  "$OTLP_GRPC_FQDN"
+do
+  printf '%-55s -> ' "$NAME"
+  getent ahostsv4 "$NAME" | awk 'NR==1 {print $1}'
+done
 ```
 
-### 6.4 DNS público para una nueva instalación
+### 6.3 Preparar los registros para la laptop
+
+En el servidor, ingresar la Floating IP confirmada y generar el bloque con los nombres reales:
+
+```bash
+source /root/instana-install/instana-vars.env
+while :; do
+  read -r -p "Floating IP o IP pública de la VM: " PUBLIC_IP
+  [[ "$PUBLIC_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && break
+  echo "Formato IPv4 inválido. Intente nuevamente."
+done
+export PUBLIC_IP
+
+cat > /root/instana-install/hosts-laptop.txt <<EOF
+${PUBLIC_IP} ${BASE_DOMAIN}
+${PUBLIC_IP} ${UNIT_FQDN}
+${PUBLIC_IP} ${AGENT_FQDN}
+${PUBLIC_IP} ${OPAMP_FQDN}
+${PUBLIC_IP} ${OTLP_HTTP_FQDN}
+${PUBLIC_IP} ${OTLP_GRPC_FQDN}
+EOF
+
+cat /root/instana-install/hosts-laptop.txt
+
+# Guardar también la IP pública confirmada para pruebas posteriores.
+VARS_TMP="$(mktemp)"
+grep -v '^export PUBLIC_IP='   /root/instana-install/instana-vars.env > "$VARS_TMP"
+printf 'export PUBLIC_IP=%q\n' "$PUBLIC_IP" >> "$VARS_TMP"
+cat "$VARS_TMP" > /root/instana-install/instana-vars.env
+rm -f "$VARS_TMP"
+chmod 600 /root/instana-install/instana-vars.env
+```
+
+### 6.4 Aplicar en una laptop macOS o Linux
+
+Ejecutar el siguiente bloque completo en la laptop. Solicita únicamente los cuatro datos que no pueden descubrirse de forma confiable desde el equipo local y exporta las variables para los comandos posteriores del mismo bloque.
+
+```bash
+while :; do
+  read -r -p "IP pública o Floating IP de Instana: " PUBLIC_IP
+  [[ "$PUBLIC_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && break
+  echo "Formato IPv4 inválido. Intente nuevamente."
+done
+export PUBLIC_IP
+
+while :; do
+  read -r -p "Base domain de Instana: " BASE_DOMAIN
+  if [[ "$BASE_DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] && \
+     [[ "$BASE_DOMAIN" == *.* ]]; then
+    break
+  fi
+  echo "Formato inválido. Ejemplo: instana-lab.example.com"
+done
+export BASE_DOMAIN
+
+read -r -p "Tenant [tenant0]: " TENANT_NAME
+export TENANT_NAME="${TENANT_NAME:-tenant0}"
+
+read -r -p "Unit [unit0]: " UNIT_NAME
+export UNIT_NAME="${UNIT_NAME:-unit0}"
+
+export UNIT_FQDN="${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}"
+export AGENT_FQDN="agent-acceptor.${BASE_DOMAIN}"
+export OPAMP_FQDN="opamp-acceptor.${BASE_DOMAIN}"
+export OTLP_HTTP_FQDN="otlp-http.${BASE_DOMAIN}"
+export OTLP_GRPC_FQDN="otlp-grpc.${BASE_DOMAIN}"
+
+HOSTS_FILE="/etc/hosts"
+HOSTS_BACKUP="/etc/hosts.backup.$(date +%Y%m%d-%H%M%S)"
+HOSTS_TMP="$(mktemp)"
+
+sudo cp -p "$HOSTS_FILE" "$HOSTS_BACKUP"
+
+sudo awk '
+  /^# BEGIN INSTANA-MANAGED$/ {skip=1; next}
+  /^# END INSTANA-MANAGED$/   {skip=0; next}
+  !skip {print}
+' "$HOSTS_FILE" > "$HOSTS_TMP"
+
+cat >> "$HOSTS_TMP" <<EOF
+# BEGIN INSTANA-MANAGED
+${PUBLIC_IP} ${BASE_DOMAIN}
+${PUBLIC_IP} ${UNIT_FQDN}
+${PUBLIC_IP} ${AGENT_FQDN}
+${PUBLIC_IP} ${OPAMP_FQDN}
+${PUBLIC_IP} ${OTLP_HTTP_FQDN}
+${PUBLIC_IP} ${OTLP_GRPC_FQDN}
+# END INSTANA-MANAGED
+EOF
+
+sudo cp "$HOSTS_TMP" "$HOSTS_FILE"
+rm -f "$HOSTS_TMP"
+
+case "$(uname -s)" in
+  Darwin)
+    sudo dscacheutil -flushcache
+    sudo killall -HUP mDNSResponder
+    ;;
+  Linux)
+    sudo resolvectl flush-caches 2>/dev/null || true
+    ;;
+esac
+
+printf '\nRespaldo: %s\n' "$HOSTS_BACKUP"
+printf 'URL base: https://%s/\n' "$BASE_DOMAIN"
+printf 'URL Unit: https://%s/\n\n' "$UNIT_FQDN"
+
+# Validar resolución y conectividad.
+if command -v getent >/dev/null 2>&1; then
+  getent hosts "$BASE_DOMAIN"
+else
+  dscacheutil -q host -a name "$BASE_DOMAIN"
+fi
+
+nc -vz "$PUBLIC_IP" 443
+curl -kI "https://${BASE_DOMAIN}/"
+```
+
+> Estas exportaciones solo permanecen en esa terminal de la laptop. No es necesario guardarlas si únicamente se utilizarán para modificar `hosts` y validar el acceso.
+
+### 6.5 Aplicar en Windows
+
+Abrir PowerShell como Administrador:
+
+```powershell
+$PublicIP    = "<IP_PUBLICA_CONFIRMADA>"
+$BaseDomain = "<BASE_DOMAIN_CONFIRMADO>"
+$TenantName = "<TENANT_CONFIRMADO>"
+$UnitName   = "<UNIT_CONFIRMADA>"
+
+$UnitFqdn     = "$UnitName-$TenantName.$BaseDomain"
+$AgentFqdn    = "agent-acceptor.$BaseDomain"
+$OpampFqdn    = "opamp-acceptor.$BaseDomain"
+$OtlpHttpFqdn = "otlp-http.$BaseDomain"
+$OtlpGrpcFqdn = "otlp-grpc.$BaseDomain"
+
+$HostsPath  = "$env:SystemRoot\System32\drivers\etc\hosts"
+$BackupPath = "$HostsPath.backup.$(Get-Date -Format yyyyMMdd-HHmmss)"
+$Begin      = "# BEGIN INSTANA-MANAGED"
+$End        = "# END INSTANA-MANAGED"
+
+Copy-Item $HostsPath $BackupPath -Force
+
+$Current = Get-Content $HostsPath
+$Output = New-Object System.Collections.Generic.List[string]
+$Skip = $false
+
+foreach ($Line in $Current) {
+  if ($Line -eq $Begin) { $Skip = $true; continue }
+  if ($Line -eq $End)   { $Skip = $false; continue }
+  if (-not $Skip)       { $Output.Add($Line) }
+}
+
+$Output.Add($Begin)
+$Output.Add("$PublicIP $BaseDomain")
+$Output.Add("$PublicIP $UnitFqdn")
+$Output.Add("$PublicIP $AgentFqdn")
+$Output.Add("$PublicIP $OpampFqdn")
+$Output.Add("$PublicIP $OtlpHttpFqdn")
+$Output.Add("$PublicIP $OtlpGrpcFqdn")
+$Output.Add($End)
+
+Set-Content -Path $HostsPath -Value $Output -Encoding ASCII
+ipconfig /flushdns
+```
+
+### 6.6 DNS público para una nueva instalación
 
 ```text
-instana-lab.example.com      A     <PUBLIC_IP>
-*.instana-lab.example.com    A     <PUBLIC_IP>
+<base_domain>      A     <PUBLIC_IP>
+*.<base_domain>    A     <PUBLIC_IP>
 ```
 
----
+Con DNS real, las modificaciones del archivo `hosts` de la laptop dejan de ser necesarias.
 
 ## 7. Puertos
+
+Cargar el puerto SSH detectado:
+
+```bash
+source /root/instana-install/instana-vars.env
+```
 
 ### 7.1 Entrada
 
 ```text
-TCP/2223  SSH
-TCP/80    HTTP
-TCP/443   UI, API, agente y OTLP
-TCP/8443  agent acceptor opcional
+TCP/$SSH_PORT  SSH detectado en el servidor
+TCP/80         HTTP
+TCP/443        UI, API, agente y OTLP
+TCP/8443       agent acceptor opcional
+```
+
+Confirmar el valor real:
+
+```bash
+source /root/instana-install/instana-vars.env
+
+printf 'SSH: TCP/%s\n' "$SSH_PORT"
+sshd -T 2>/dev/null | grep '^port '
 ```
 
 ### 7.2 Salida
@@ -298,8 +642,6 @@ agents.instana.io
 10.43.0.0/16
 loopback
 ```
-
----
 
 ## 8. Inventario inicial
 
@@ -324,12 +666,12 @@ ss -lntp
 timedatectl
 ```
 
-Comprobar SSH:
+Comprobar SSH usando la variable detectada:
 
 ```bash
-ss -lntp | grep ':2223'
-grep -R '^[[:space:]]*Port[[:space:]]' \
-  /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>/dev/null
+source /root/instana-install/instana-vars.env
+ss -lntp | grep -E "[:.]${SSH_PORT}[[:space:]]"
+sshd -T 2>/dev/null | grep '^port '
 ```
 
 No cerrar la sesión original al modificar firewall o SSH. Mantener una segunda sesión abierta.
@@ -365,10 +707,12 @@ systemctl reset-failed
 Validar:
 
 ```bash
+source /root/instana-install/instana-vars.env
+
 dpkg -l | grep -i nginx || echo "Nginx no instalado"
 ss -lntp | grep -E ':(80|443|8080|8443)\b' || \
 echo "Puertos libres"
-ss -lntp | grep ':2223'
+ss -lntp | grep -E "[:.]${SSH_PORT}[[:space:]]"
 ```
 
 ---
@@ -474,7 +818,13 @@ cat /sys/kernel/mm/transparent_hugepage/enabled
 
 ## 12. Firewall
 
-En el caso observado, UFW estaba inactivo:
+Cargar el puerto SSH real:
+
+```bash
+source /root/instana-install/instana-vars.env
+```
+
+Revisar UFW:
 
 ```bash
 ufw status verbose
@@ -483,24 +833,26 @@ ufw status verbose
 Si se activa:
 
 ```bash
-ufw allow 2223/tcp
+source /root/instana-install/instana-vars.env
+
+ufw allow "${SSH_PORT}/tcp"
 ufw allow 80/tcp
 ufw allow 443/tcp
 ufw allow 8443/tcp
 ```
 
-Antes de `ufw enable`, confirmar una segunda sesión SSH.
+Antes de `ufw enable`, confirmar una segunda sesión SSH utilizando `$SSH_PORT`.
 
-En IBM Cloud, configurar Security Group:
+En IBM Cloud o el proveedor correspondiente, configurar Security Group:
 
 ```text
-TCP/2223 desde tu IP pública
-TCP/443 desde los orígenes autorizados
-TCP/80 opcional
-TCP/8443 opcional
+TCP/<SSH_PORT_REAL> desde la IP pública de administración
+TCP/443             desde los orígenes autorizados
+TCP/80              opcional
+TCP/8443            opcional
 ```
 
----
+> En el laboratorio original el puerto fue TCP/2223. En otro ambiente se debe usar el valor detectado, no copiar `2223`.
 
 ## 13. Preparar `/dev/vdd`
 
@@ -598,12 +950,13 @@ xfs
 
 ## 14. Instalar `stanctl`
 
-```bash
-read -rsp "OFFICIAL_AGENT_KEY / DOWNLOAD_KEY: " DOWNLOAD_KEY
-echo
-```
+Ejecutar el bloque completo. La Download Key se mantiene como variable local; no se exporta porque solo se utiliza para crear la autenticación APT y descargar la llave del repositorio.
 
 ```bash
+umask 077
+read -rsp "OFFICIAL_AGENT_KEY / DOWNLOAD_KEY: " DOWNLOAD_KEY
+echo
+
 echo 'deb [signed-by=/usr/share/keyrings/instana-archive-keyring.gpg] https://artifact-public.instana.io/artifactory/rel-debian-public-virtual generic main' \
   > /etc/apt/sources.list.d/instana-product.list
 
@@ -624,7 +977,9 @@ wget -nv -O- \
 
 apt-get update
 apt-get install -y stanctl
+apt-mark hold stanctl
 
+unset DOWNLOAD_KEY
 stanctl --version
 ```
 
@@ -634,28 +989,52 @@ Benchmark:
 stanctl benchmark fio
 ```
 
----
-
 ## 15. Crear `.env`
 
+`stanctl up --env-file` lee directamente el archivo, por lo que sus líneas usan `VARIABLE=valor` y no `export VARIABLE=valor`.
+
+Las variables del ambiente se cargan mediante `source`. Las claves se mantienen locales a la shell y se eliminan con `unset` después de crear el archivo.
+
+Ejecutar el bloque completo:
+
 ```bash
-mkdir -p /root/instana-install
-chmod 700 /root/instana-install
-cd /root/instana-install
+source /root/instana-install/instana-vars.env
+umask 077
 
-read -rsp "OFFICIAL_AGENT_KEY / DOWNLOAD_KEY: " OFFICIAL_AGENT_KEY; echo
-read -rsp "SALES_KEY (diferente): " STANCTL_SALES_KEY; echo
-read -rsp "ADMIN_PASSWORD: " STANCTL_UNIT_INITIAL_ADMIN_PASSWORD; echo
+printf '%-24s %s\n' \
+  'Base domain:' "$BASE_DOMAIN" \
+  'Tenant:' "$TENANT_NAME" \
+  'Unit:' "$UNIT_NAME" \
+  'IP privada:' "$PRIVATE_IP"
 
+read -rsp "OFFICIAL_AGENT_KEY / DOWNLOAD_KEY: " OFFICIAL_AGENT_KEY
+echo
+read -rsp "SALES_KEY (diferente): " STANCTL_SALES_KEY
+echo
+read -rsp "ADMIN_PASSWORD: " STANCTL_UNIT_INITIAL_ADMIN_PASSWORD
+echo
+
+# Variables locales: no se exportan porque solo se usan para escribir .env.
 STANCTL_DOWNLOAD_KEY="$OFFICIAL_AGENT_KEY"
 STANCTL_UNIT_AGENT_KEY="$OFFICIAL_AGENT_KEY"
 
-export STANCTL_CORE_BASE_DOMAIN="itzvsi-6920008uok-a2mgsfyz.local"
-export STANCTL_UNIT_TENANT_NAME="tenant0"
-export STANCTL_UNIT_UNIT_NAME="unit0"
-```
+CLUSTER_DATA_DIR="/mnt/instana/cluster"
+VOLUME_DATA="/mnt/instana/stanctl/data"
+VOLUME_METRICS="/mnt/instana/stanctl/metrics"
+VOLUME_ANALYTICS="/mnt/instana/stanctl/analytics"
+VOLUME_OBJECTS="/mnt/instana/stanctl/objects"
 
-```bash
+for PATH_TO_CHECK in \
+  "$CLUSTER_DATA_DIR" \
+  "$VOLUME_DATA" \
+  "$VOLUME_METRICS" \
+  "$VOLUME_ANALYTICS" \
+  "$VOLUME_OBJECTS"
+do
+  printf '\n=== %s ===\n' "$PATH_TO_CHECK"
+  findmnt -T "$PATH_TO_CHECK" || exit 1
+done
+
 cat > /root/instana-install/.env <<EOF
 STANCTL_INSTALL_TYPE=demo
 STANCTL_DOWNLOAD_KEY=${STANCTL_DOWNLOAD_KEY}
@@ -665,24 +1044,32 @@ STANCTL_HELM_REPO_PASSWORD=${STANCTL_DOWNLOAD_KEY}
 STANCTL_SALES_KEY=${STANCTL_SALES_KEY}
 STANCTL_UNIT_AGENT_KEY=${STANCTL_UNIT_AGENT_KEY}
 STANCTL_UNIT_INITIAL_ADMIN_PASSWORD=${STANCTL_UNIT_INITIAL_ADMIN_PASSWORD}
-STANCTL_CORE_BASE_DOMAIN=${STANCTL_CORE_BASE_DOMAIN}
-STANCTL_UNIT_TENANT_NAME=${STANCTL_UNIT_TENANT_NAME}
-STANCTL_UNIT_UNIT_NAME=${STANCTL_UNIT_UNIT_NAME}
+STANCTL_CORE_BASE_DOMAIN=${BASE_DOMAIN}
+STANCTL_UNIT_TENANT_NAME=${TENANT_NAME}
+STANCTL_UNIT_UNIT_NAME=${UNIT_NAME}
 STANCTL_CORE_TLS_GENERATE_CERT=true
-STANCTL_CLUSTER_DATA_DIR=/mnt/instana/cluster
-STANCTL_VOLUME_DATA=/mnt/instana/stanctl/data
-STANCTL_VOLUME_METRICS=/mnt/instana/stanctl/metrics
-STANCTL_VOLUME_ANALYTICS=/mnt/instana/stanctl/analytics
-STANCTL_VOLUME_OBJECTS=/mnt/instana/stanctl/objects
+STANCTL_CLUSTER_DATA_DIR=${CLUSTER_DATA_DIR}
+STANCTL_VOLUME_DATA=${VOLUME_DATA}
+STANCTL_VOLUME_METRICS=${VOLUME_METRICS}
+STANCTL_VOLUME_ANALYTICS=${VOLUME_ANALYTICS}
+STANCTL_VOLUME_OBJECTS=${VOLUME_OBJECTS}
 STANCTL_CORE_UPDATE_STRATEGY=Recreate
 STANCTL_PLAIN=true
 STANCTL_TIMEOUT=2h
 EOF
 
 chmod 600 /root/instana-install/.env
+
+unset OFFICIAL_AGENT_KEY STANCTL_DOWNLOAD_KEY STANCTL_SALES_KEY
+unset STANCTL_UNIT_AGENT_KEY STANCTL_UNIT_INITIAL_ADMIN_PASSWORD
+
+printf '\nArchivo creado: /root/instana-install/.env\n'
+grep -E \
+'^(STANCTL_INSTALL_TYPE|STANCTL_CORE_BASE_DOMAIN|STANCTL_UNIT_TENANT_NAME|STANCTL_UNIT_UNIT_NAME|STANCTL_CLUSTER_DATA_DIR|STANCTL_VOLUME_|STANCTL_CORE_TLS_)' \
+/root/instana-install/.env
 ```
 
-Para una instalación pública nueva con certificado confiable, reemplazar:
+Para una instalación pública nueva con certificado confiable, sustituir dentro del `.env`:
 
 ```text
 STANCTL_CORE_TLS_GENERATE_CERT=true
@@ -695,22 +1082,14 @@ STANCTL_CORE_TLS_CRT=/root/instana-install/tls/tls.crt
 STANCTL_CORE_TLS_KEY=/root/instana-install/tls/tls.key
 ```
 
-El certificado debe contener:
+El certificado debe cubrir:
 
 ```text
-DNS:instana-lab.example.com
-DNS:*.instana-lab.example.com
+DNS:<base_domain>
+DNS:*.<base_domain>
 ```
 
-Validar solo campos no sensibles:
-
-```bash
-grep -E \
-'STANCTL_INSTALL_TYPE|STANCTL_CORE_BASE_DOMAIN|STANCTL_UNIT_TENANT_NAME|STANCTL_UNIT_UNIT_NAME|STANCTL_CLUSTER_DATA_DIR|STANCTL_VOLUME_|STANCTL_CORE_TLS_' \
-/root/instana-install/.env
-```
-
----
+No mostrar el contenido completo del `.env` en una sesión compartida.
 
 ## 16. Instalar
 
@@ -959,55 +1338,57 @@ Ready          True
 
 ### 19.1 Desde el servidor
 
-```bash
-BASE_DOMAIN="itzvsi-6920008uok-a2mgsfyz.local"
-UNIT_DOMAIN="unit0-tenant0.${BASE_DOMAIN}"
-IP="10.240.1.161"
+Cargar las variables:
 
-for HOST in "$BASE_DOMAIN" "$UNIT_DOMAIN"; do
+```bash
+source /root/instana-install/instana-vars.env
+```
+
+Probar el dominio base y la Unit usando SNI y la IP privada:
+
+```bash
+source /root/instana-install/instana-vars.env
+
+for HOST in "$BASE_DOMAIN" "$UNIT_FQDN"; do
   curl -ksS \
     -o /dev/null \
     -w "${HOST}: HTTP %{http_code}, connect=%{time_connect}s, total=%{time_total}s\n" \
-    --resolve "${HOST}:443:${IP}" \
+    --resolve "${HOST}:443:${PRIVATE_IP}" \
     "https://${HOST}/"
 done
 ```
 
-Resultados observados válidos:
+Resultados válidos según la ruta:
+
+```text
+200, 301, 302, 401 o 403
+```
+
+Evidencia del laboratorio original:
 
 ```text
 Base domain: HTTP 301
 Unit domain: HTTP 401
 ```
 
+Estos códigos son evidencia, no valores obligatorios para todos los ambientes.
+
 ### 19.2 Desde la laptop
 
-Después de registrar la Floating IP en `/etc/hosts`:
+Después de agregar el bloque generado en la sección 6:
 
 ```bash
-nc -vz <PUBLIC_IP> 443
+source /root/instana-install/instana-vars.env
 
-curl -vkI \
-  https://itzvsi-6920008uok-a2mgsfyz.local/
-
-curl -vkI \
-  https://unit0-tenant0.itzvsi-6920008uok-a2mgsfyz.local/
-```
-
-Validar el certificado presentado por SNI:
-
-```bash
-openssl s_client \
-  -connect <PUBLIC_IP>:443 \
-  -servername itzvsi-6920008uok-a2mgsfyz.local \
-  </dev/null 2>/dev/null |
-openssl x509 -noout -subject -issuer -dates -ext subjectAltName
+nc -vz "$PUBLIC_IP" 443
+curl -vkI "https://${BASE_DOMAIN}/"
+curl -vkI "https://${UNIT_FQDN}/"
 ```
 
 Abrir:
 
 ```text
-https://itzvsi-6920008uok-a2mgsfyz.local
+https://<base_domain>
 ```
 
 Usuario:
@@ -1016,33 +1397,30 @@ Usuario:
 admin@instana.local
 ```
 
----
-
 ## 20. OpenTelemetry
 
-### 20.1 Endpoints del laboratorio
+### 20.1 Endpoints del ambiente
 
-```text
-OTLP/HTTP:
-https://otlp-http.itzvsi-6920008uok-a2mgsfyz.local:443
+Cargar las variables:
 
-OTLP/gRPC:
-https://otlp-grpc.itzvsi-6920008uok-a2mgsfyz.local:443
-
-OpAMP:
-https://opamp-acceptor.itzvsi-6920008uok-a2mgsfyz.local:443
-
-Agent acceptor:
-https://agent-acceptor.itzvsi-6920008uok-a2mgsfyz.local:443
+```bash
+source /root/instana-install/instana-vars.env
 ```
 
-La Agent Key oficial se utiliza para agentes y para `x-instana-key`. La Sales Key no se usa en estos endpoints.
+Mostrar los endpoints reales:
+
+```bash
+source /root/instana-install/instana-vars.env
+
+printf 'OTLP/HTTP: https://%s:443\n' "$OTLP_HTTP_FQDN"
+printf 'OTLP/gRPC: https://%s:443\n' "$OTLP_GRPC_FQDN"
+printf 'OpAMP:     https://%s:443\n' "$OPAMP_FQDN"
+```
 
 No requieren activación adicional si:
 
 ```bash
-kubectl get pods -n instana-core |
-grep otlp-acceptor
+kubectl get pods -n instana-core | grep otlp-acceptor
 ```
 
 devuelve un pod `Running`.
@@ -1060,22 +1438,20 @@ kubectl get core instana-core \
 Usar la Agent Key oficial, no la Sales Key:
 
 ```bash
+source /root/instana-install/instana-vars.env
 read -rsp "INSTANA_AGENT_KEY: " INSTANA_AGENT_KEY
 echo
 
-BASE_DOMAIN="itzvsi-6920008uok-a2mgsfyz.local"
-IP="10.240.1.161"
-
 curl -sk \
   --http2 \
-  --resolve "otlp-http.${BASE_DOMAIN}:443:${IP}" \
+  --resolve "${OTLP_HTTP_FQDN}:443:${PRIVATE_IP}" \
   -H "Content-Type: application/x-protobuf" \
   -H "x-instana-key: ${INSTANA_AGENT_KEY}" \
   -H "x-instana-host: otel-local-test" \
   --data-binary '' \
   -o /dev/null \
   -w 'OTLP/HTTP traces: HTTP %{http_code}\n' \
-  "https://otlp-http.${BASE_DOMAIN}/v1/traces"
+  "https://${OTLP_HTTP_FQDN}/v1/traces"
 
 unset INSTANA_AGENT_KEY
 ```
@@ -1092,16 +1468,26 @@ base64 -d \
 
 ### 20.4 Collector OTLP/HTTP
 
+Sustituir `<BASE_DOMAIN>` por el valor mostrado en `$BASE_DOMAIN`:
+
 ```yaml
 exporters:
   otlphttp/instana:
-    endpoint: https://otlp-http.itzvsi-6920008uok-a2mgsfyz.local:443
+    endpoint: https://otlp-http.<BASE_DOMAIN>:443
     headers:
       x-instana-key: ${env:INSTANA_AGENT_KEY}
       x-instana-host: otel-collector-lab
     tls:
       insecure: false
       ca_file: /etc/otel/instana-ca.crt
+```
+
+Para imprimir el endpoint sin escribirlo manualmente:
+
+```bash
+source /root/instana-install/instana-vars.env
+
+printf 'endpoint: https://%s:443\n' "$OTLP_HTTP_FQDN"
 ```
 
 ### 20.5 Collector OTLP/gRPC
@@ -1109,7 +1495,7 @@ exporters:
 ```yaml
 exporters:
   otlp/instana:
-    endpoint: https://otlp-grpc.itzvsi-6920008uok-a2mgsfyz.local:443
+    endpoint: https://otlp-grpc.<BASE_DOMAIN>:443
     headers:
       x-instana-key: ${env:INSTANA_AGENT_KEY}
       x-instana-host: otel-collector-lab
@@ -1118,7 +1504,13 @@ exporters:
       ca_file: /etc/otel/instana-ca.crt
 ```
 
----
+Imprimir el endpoint real:
+
+```bash
+source /root/instana-install/instana-vars.env
+
+printf 'endpoint: https://%s:443\n' "$OTLP_GRPC_FQDN"
+```
 
 ## 21. Consideración especial: PVC ClickHouse
 
@@ -1186,7 +1578,7 @@ tail -n 200
 
 ## 23. Seguridad y operación
 
-- Restringir TCP/2223 a la IP de administración.
+- Restringir el puerto `$SSH_PORT` detectado a la IP de administración.
 - Usar dominio real para una nueva publicación.
 - Reemplazar certificado autofirmado por certificado confiable.
 - No subir `.env` al repositorio.
@@ -1221,10 +1613,10 @@ df -hT / /mnt/instana/stanctl
 | Validación | Resultado |
 |---|---|
 | Ubuntu | 22.04.5 LTS |
-| SSH | TCP/2223 preservado |
-| Hostname | identificado |
-| Base domain | configurado |
-| Laptop hosts | apunta a Floating IP |
+| SSH | puerto detectado y preservado mediante `$SSH_PORT` |
+| Hostname | descubierto mediante `hostnamectl --static` |
+| Base domain | confirmado y guardado en `instana-vars.env` |
+| Laptop hosts | generado con variables y apunta a la Floating IP confirmada |
 | Server hosts | apunta a IP privada |
 | Agent Key | misma usada como Download Key |
 | Sales Key | diferente |
