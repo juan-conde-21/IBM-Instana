@@ -1,9 +1,9 @@
-# Laboratorio de IBM Instana Self-Hosted Standard Edition sobre Ubuntu 22.04
+# Laboratorio de IBM Instana Self-Hosted Standard Edition sobre Ubuntu 22.04 preparado para IBM Concert Platform
 
-> Manual específico y reproducible para preparar, instalar, publicar y validar un laboratorio single-node de IBM Instana Self-Hosted Standard Edition sobre Ubuntu 22.04. Incluye el caso real ejecutado en IBM Cloud, con SSH en TCP/2223, disco adicional de 500 GiB, acceso mediante IP pública, recuperación de ClickHouse y validación de OpenTelemetry.
+> Manual específico y reproducible para preparar, instalar, publicar y validar un laboratorio single-node de IBM Instana Self-Hosted Standard Edition sobre Ubuntu 22.04, dejándolo habilitado desde la instalación como capacidad Concert Observe. Conserva el caso real ejecutado en IBM Cloud y añade el perfil Concert-ready, los custom values, el dimensionamiento adicional y la resolución de las incidencias observadas durante una conversión posterior.
 
 **Última revisión:** julio de 2026  
-**Archivo sugerido para el repositorio:** `Laboratorio-Instana-Ubuntu-22.04.md`
+**Archivo sugerido para el repositorio:** `Instalacion-single-node-ubuntu-techzone-concert-ready.md`
 
 ---
 
@@ -22,6 +22,50 @@ No utilizar este perfil como arquitectura productiva.
 
 ---
 
+
+
+## 1.1 Ruta recomendada para Concert Observe
+
+Este documento utiliza como ruta principal una **instalación nueva Concert-ready**. No se recomienda instalar primero un backend estándar y convertirlo después, porque esa conversión puede dejar pendientes de capacidad, certificados internos o feature flags.
+
+Orden recomendado:
+
+1. instalar Platform Hub e ITOM en OpenShift;
+2. instalar TurboLite y publicar su Route;
+3. confirmar las URLs públicas de Hub y TurboLite;
+4. preparar el host Instana con el sizing adicional;
+5. crear los custom values de Core y Unit;
+6. instalar con `stanctl up --concert-platform-enabled`;
+7. validar Core, Unit y Concert Gateway;
+8. asegurar que OpenShift resuelva y alcance el FQDN de Instana;
+9. adjuntar Instana al Hub;
+10. ejecutar `setup-keycloak.sh` desde el host administrativo de Concert.
+
+> Platform Hub e Instana deben desplegarse en clusters separados. Para usar Instana como capacidad de Concert, IBM requiere agregar **2 CPU y 10 GB de RAM** al sizing normal de Instana. Para este laboratorio single-node se recomienda provisionar **20 vCPU y 80 GB de RAM** para disponer de margen, aunque el mínimo adicional documentado es +2 CPU/+10 GB.
+
+### Perfil de esta guía
+
+```text
+Tipo: laboratorio single-node
+Instana: Self-Hosted Standard Edition
+Concert: Platform 3.0.0
+Stanctl: 1.14.1 o posterior
+Instalación: online
+Integración: habilitada desde stanctl up
+```
+
+### Datos que deben existir antes de instalar Instana
+
+```text
+CONCERT_HUB_URL=https://<route-platform-hub>
+TURBOLITE_URL=https://<route-turbolite>
+BASE_DOMAIN=<dominio-instana>
+TENANT_NAME=<tenant>
+UNIT_NAME=<unit>
+INITIAL_ADMIN_EMAIL=<correo-válido>
+```
+
+
 ## 2. Ambiente validado
 
 > **EVIDENCIA DEL LABORATORIO ORIGINAL — NO COPIAR LOS VALORES COMO SI FUERAN UNIVERSALES.**  
@@ -32,8 +76,10 @@ Sistema operativo: Ubuntu 22.04.5 LTS
 Hostname Linux: itzvsi-6920008uok-a2mgsfyz
 IP privada: 10.240.1.161
 SSH: TCP/2223
-CPU: 16 vCPU
-RAM visible: 62 GiB
+CPU observado: 16 vCPU
+RAM visible observada: 62 GiB
+Estado: suficiente para Instana standalone, insuficiente para el perfil Concert completo
+Recomendación Concert-ready: 20 vCPU / 80 GiB para laboratorio
 Root: /dev/vda1, aproximadamente 250 GiB
 Disco adicional: /dev/vdd, 500 GiB
 Filesystem adicional: XFS
@@ -285,6 +331,82 @@ env | grep -E \
 ```
 
 > El archivo `instana-vars.env` no contiene claves ni contraseñas. Las variables auxiliares como `HOSTS_FILE`, `HOSTS_TMP`, `PATH_TO_CHECK` o `RECONCILE_ID` no se exportan porque solo se utilizan dentro del bloque en el que se crean.
+
+
+
+### 3.5 Agregar variables de IBM Concert Platform
+
+Ejecutar después de crear `instana-vars.env` y cuando ya se conozcan las Routes de Platform Hub y TurboLite:
+
+```bash
+source /root/instana-install/instana-vars.env
+
+while :; do
+  read -r -p "URL de Platform Hub, sin /platform/ al final: " CONCERT_HUB_URL
+  CONCERT_HUB_URL="${CONCERT_HUB_URL%/}"
+  [[ "$CONCERT_HUB_URL" == https://* ]] && break
+  echo "La URL debe iniciar con https://"
+done
+export CONCERT_HUB_URL
+
+while :; do
+  read -r -p "URL de TurboLite: " TURBOLITE_URL
+  TURBOLITE_URL="${TURBOLITE_URL%/}"
+  [[ "$TURBOLITE_URL" == https://* ]] && break
+  echo "La URL debe iniciar con https://"
+done
+export TURBOLITE_URL
+
+read -r -p "Correo válido para el administrador inicial de Instana: " INITIAL_ADMIN_EMAIL
+export INITIAL_ADMIN_EMAIL
+
+export CONCERT_HUB_HOST="${CONCERT_HUB_URL#https://}"
+export CONCERT_HUB_HOST="${CONCERT_HUB_HOST%%/*}"
+
+if [[ "$CONCERT_HUB_HOST" == *:* ]]; then
+  export CONCERT_HUB_EXTERNAL_URL="$CONCERT_HUB_URL"
+else
+  export CONCERT_HUB_EXTERNAL_URL="${CONCERT_HUB_URL}:443"
+fi
+
+export TURBOLITE_HOST="${TURBOLITE_URL#https://}"
+export TURBOLITE_HOST="${TURBOLITE_HOST%%/*}"
+export CONCERT_ENVIRONMENT="${UNIT_NAME}-${TENANT_NAME}"
+
+VARS_FILE=/root/instana-install/instana-vars.env
+VARS_TMP="$(mktemp)"
+
+grep -vE '^export (CONCERT_HUB_URL|CONCERT_HUB_HOST|CONCERT_HUB_EXTERNAL_URL|TURBOLITE_URL|TURBOLITE_HOST|INITIAL_ADMIN_EMAIL|CONCERT_ENVIRONMENT)=' \
+  "$VARS_FILE" > "$VARS_TMP"
+
+{
+  printf 'export CONCERT_HUB_URL=%q\n' "$CONCERT_HUB_URL"
+  printf 'export CONCERT_HUB_HOST=%q\n' "$CONCERT_HUB_HOST"
+  printf 'export CONCERT_HUB_EXTERNAL_URL=%q\n' "$CONCERT_HUB_EXTERNAL_URL"
+  printf 'export TURBOLITE_URL=%q\n' "$TURBOLITE_URL"
+  printf 'export TURBOLITE_HOST=%q\n' "$TURBOLITE_HOST"
+  printf 'export INITIAL_ADMIN_EMAIL=%q\n' "$INITIAL_ADMIN_EMAIL"
+  printf 'export CONCERT_ENVIRONMENT=%q\n' "$CONCERT_ENVIRONMENT"
+} >> "$VARS_TMP"
+
+cat "$VARS_TMP" > "$VARS_FILE"
+rm -f "$VARS_TMP"
+chmod 600 "$VARS_FILE"
+
+printf '%-28s %s\n' \
+  'Platform Hub:' "$CONCERT_HUB_URL" \
+  'Hub external URL:' "$CONCERT_HUB_EXTERNAL_URL" \
+  'TurboLite:' "$TURBOLITE_URL" \
+  'Environment:' "$CONCERT_ENVIRONMENT" \
+  'Admin email:' "$INITIAL_ADMIN_EMAIL"
+```
+
+En una nueva sesión:
+
+```bash
+source /root/instana-install/instana-vars.env
+```
+
 
 ## 4. Claves
 
@@ -643,6 +765,31 @@ agents.instana.io
 loopback
 ```
 
+
+
+### 7.4 Puertos para el perfil Concert-ready
+
+Todos los servicios acceptor utilizados en el perfil Concert-ready se publican en TCP/8443:
+
+```text
+agent-acceptor.<base-domain>:8443
+otlp-http.<base-domain>:8443
+otlp-grpc.<base-domain>:8443
+EUM acceptor: 8443
+serverless acceptor: 8443
+synthetics acceptor: 8443
+```
+
+No configurar estos acceptors en 443. El gateway de UI continúa utilizando HTTPS/443.
+
+Además, Instana debe alcanzar por HTTPS:
+
+```text
+Platform Hub Route: TCP/443
+TurboLite Route: TCP/443
+```
+
+
 ## 8. Inventario inicial
 
 ```bash
@@ -989,140 +1136,273 @@ Benchmark:
 stanctl benchmark fio
 ```
 
-## 15. Crear `.env`
+## 15. Crear el archivo no sensible y los custom values de Concert
 
-`stanctl up --env-file` lee directamente el archivo, por lo que sus líneas usan `VARIABLE=valor` y no `export VARIABLE=valor`.
+### 15.1 Archivo `.env` sin claves ni contraseñas
 
-Las variables del ambiente se cargan mediante `source`. Las claves se mantienen locales a la shell y se eliminan con `unset` después de crear el archivo.
-
-Ejecutar el bloque completo:
+El archivo conserva únicamente configuración no sensible. Las claves y el password se capturan en memoria antes de ejecutar `stanctl up`.
 
 ```bash
 source /root/instana-install/instana-vars.env
 umask 077
 
-printf '%-24s %s\n' \
-  'Base domain:' "$BASE_DOMAIN" \
-  'Tenant:' "$TENANT_NAME" \
-  'Unit:' "$UNIT_NAME" \
-  'IP privada:' "$PRIVATE_IP"
-
-read -rsp "OFFICIAL_AGENT_KEY / DOWNLOAD_KEY: " OFFICIAL_AGENT_KEY
-echo
-read -rsp "SALES_KEY (diferente): " STANCTL_SALES_KEY
-echo
-read -rsp "ADMIN_PASSWORD: " STANCTL_UNIT_INITIAL_ADMIN_PASSWORD
-echo
-
-# Variables locales: no se exportan porque solo se usan para escribir .env.
-STANCTL_DOWNLOAD_KEY="$OFFICIAL_AGENT_KEY"
-STANCTL_UNIT_AGENT_KEY="$OFFICIAL_AGENT_KEY"
-
-CLUSTER_DATA_DIR="/mnt/instana/cluster"
-VOLUME_DATA="/mnt/instana/stanctl/data"
-VOLUME_METRICS="/mnt/instana/stanctl/metrics"
-VOLUME_ANALYTICS="/mnt/instana/stanctl/analytics"
-VOLUME_OBJECTS="/mnt/instana/stanctl/objects"
-
-for PATH_TO_CHECK in \
-  "$CLUSTER_DATA_DIR" \
-  "$VOLUME_DATA" \
-  "$VOLUME_METRICS" \
-  "$VOLUME_ANALYTICS" \
-  "$VOLUME_OBJECTS"
-do
-  printf '\n=== %s ===\n' "$PATH_TO_CHECK"
-  findmnt -T "$PATH_TO_CHECK" || exit 1
-done
-
 cat > /root/instana-install/.env <<EOF
 STANCTL_INSTALL_TYPE=demo
-STANCTL_DOWNLOAD_KEY=${STANCTL_DOWNLOAD_KEY}
-STANCTL_CLUSTER_PASSWORD=${STANCTL_DOWNLOAD_KEY}
-STANCTL_REGISTRY_PASSWORD=${STANCTL_DOWNLOAD_KEY}
-STANCTL_HELM_REPO_PASSWORD=${STANCTL_DOWNLOAD_KEY}
-STANCTL_SALES_KEY=${STANCTL_SALES_KEY}
-STANCTL_UNIT_AGENT_KEY=${STANCTL_UNIT_AGENT_KEY}
-STANCTL_UNIT_INITIAL_ADMIN_PASSWORD=${STANCTL_UNIT_INITIAL_ADMIN_PASSWORD}
 STANCTL_CORE_BASE_DOMAIN=${BASE_DOMAIN}
 STANCTL_UNIT_TENANT_NAME=${TENANT_NAME}
 STANCTL_UNIT_UNIT_NAME=${UNIT_NAME}
 STANCTL_CORE_TLS_GENERATE_CERT=true
-STANCTL_CLUSTER_DATA_DIR=${CLUSTER_DATA_DIR}
-STANCTL_VOLUME_DATA=${VOLUME_DATA}
-STANCTL_VOLUME_METRICS=${VOLUME_METRICS}
-STANCTL_VOLUME_ANALYTICS=${VOLUME_ANALYTICS}
-STANCTL_VOLUME_OBJECTS=${VOLUME_OBJECTS}
+STANCTL_CLUSTER_DATA_DIR=/mnt/instana/cluster
+STANCTL_VOLUME_DATA=/mnt/instana/stanctl/data
+STANCTL_VOLUME_METRICS=/mnt/instana/stanctl/metrics
+STANCTL_VOLUME_ANALYTICS=/mnt/instana/stanctl/analytics
+STANCTL_VOLUME_OBJECTS=/mnt/instana/stanctl/objects
 STANCTL_CORE_UPDATE_STRATEGY=Recreate
 STANCTL_PLAIN=true
 STANCTL_TIMEOUT=2h
 EOF
 
 chmod 600 /root/instana-install/.env
-
-unset OFFICIAL_AGENT_KEY STANCTL_DOWNLOAD_KEY STANCTL_SALES_KEY
-unset STANCTL_UNIT_AGENT_KEY STANCTL_UNIT_INITIAL_ADMIN_PASSWORD
-
-printf '\nArchivo creado: /root/instana-install/.env\n'
-grep -E \
-'^(STANCTL_INSTALL_TYPE|STANCTL_CORE_BASE_DOMAIN|STANCTL_UNIT_TENANT_NAME|STANCTL_UNIT_UNIT_NAME|STANCTL_CLUSTER_DATA_DIR|STANCTL_VOLUME_|STANCTL_CORE_TLS_)' \
-/root/instana-install/.env
 ```
 
-Para una instalación pública nueva con certificado confiable, sustituir dentro del `.env`:
-
-```text
-STANCTL_CORE_TLS_GENERATE_CERT=true
-```
-
-por:
-
-```text
-STANCTL_CORE_TLS_CRT=/root/instana-install/tls/tls.crt
-STANCTL_CORE_TLS_KEY=/root/instana-install/tls/tls.key
-```
-
-El certificado debe cubrir:
-
-```text
-DNS:<base_domain>
-DNS:*.<base_domain>
-```
-
-No mostrar el contenido completo del `.env` en una sesión compartida.
-
-## 16. Instalar
+### 15.2 Crear custom values
 
 ```bash
-tmux new -s instana-install
+source /root/instana-install/instana-vars.env
+
+mkdir -p \
+  "$HOME/.stanctl/values/instana-core" \
+  "$HOME/.stanctl/values/instana-unit"
+
+cat > "$HOME/.stanctl/values/instana-core/custom-values.yaml" <<EOF
+gatewayConfig:
+  concert:
+    imageConfig:
+      registry: artifact-public.instana.io
+      repository: self-hosted-images/k8s/ibm-solis-gw
+      tag: v3.0.0
+    properties:
+      - name: solis.hub.external.url
+        value: "${CONCERT_HUB_EXTERNAL_URL}"
+
+featureFlags:
+  - name: feature.beeinstana.infra.metrics.enabled
+    enabled: true
+  - name: feature.solis.enabled
+    enabled: true
+  - name: feature.vulnerabilityCenter.enabled
+    enabled: true
+  - name: feature.resource.optimization.actions.enabled
+    enabled: true
+  - name: feature.ibm.common.enabled
+    enabled: true
+  - name: feature.solis.test.catalog.enabled
+    enabled: true
+  - name: feature.tealium.privacy.enabled
+    enabled: true
+  - name: feature.walkme.tool.enabled
+    enabled: true
+  - name: feature.segment.analytics.enabled
+    enabled: true
+  - name: feature.solis.jwt.enabled
+    enabled: true
+  - name: feature.remote.integrations.enabled
+    enabled: true
+  - name: feature.instana.prefix.enabled
+    enabled: true
+  - name: feature.coordinator.ai.agent.enabled
+    enabled: true
+  - name: feature.coordinator.ai.agent.component.enabled
+    enabled: true
+  - name: feature.automated.investigation.ai.agent.enabled
+    enabled: true
+  - name: feature.automated.investigation.ai.agent.component.enabled
+    enabled: true
+  - name: feature.kubernetes.ai.agent.enabled
+    enabled: true
+  - name: feature.kubernetes.ai.agent.component.enabled
+    enabled: true
+  - name: feature.slo.ai.agent.enabled
+    enabled: true
+  - name: feature.slo.ai.agent.component.enabled
+    enabled: true
+  - name: feature.mcp.instana.component.enabled
+    enabled: true
+  - name: feature.incident.ai.summarization.enabled
+    enabled: true
+  - name: feature.instana.chat.enabled
+    enabled: true
+  - name: feature.ai.gateway.enabled
+    enabled: true
+  - name: feature.ai.rca.agentic.workflow.enabled
+    enabled: true
+  - name: feature.mcp.instana.enabled
+    enabled: true
+  - name: feature.action.ai.generation.enabled
+    enabled: true
+  - name: feature.graphql.endpoint.enabled
+    enabled: true
+  - name: feature.ai.automated.investigation.enabled
+    enabled: true
+  - name: feature.rca.agentic.enabled
+    enabled: true
+  - name: feature.rca.ai.automated.investigation.enabled
+    enabled: true
+
+properties:
+  - name: config.tag.processor.readiness.min.storage.hit.rate
+    value: "0.5"
+  - name: config.saas.platform.iam.enabled
+    value: "true"
+  - name: config.saas.platform.all.origins
+    value: "${CONCERT_HUB_HOST},${TURBOLITE_HOST}"
+  - name: config.platform.hub.path
+    value: "platform_hub"
+  - name: config.solis.jwt.audience
+    value: "PLATFORMAUD"
+  - name: config.solis.jwt.issuer
+    value: "IBMPLATFORM"
+  - name: config.solis.hub.url
+    value: "https://concert-gateway.instana-core.svc.cluster.local:20443"
+  - name: config.solisUiHost
+    value: "/solis_hub/ui"
+  - name: config.solis.jwt.verifyInstanceUrl
+    value: "false"
+  - name: config.solis.hub.environments
+    value: "${CONCERT_ENVIRONMENT}"
+  - name: config.solis.jwt.verifySubject
+    value: "false"
+EOF
+
+cat > "$HOME/.stanctl/values/instana-unit/custom-values.yaml" <<EOF
+initialAdminUser: ${INITIAL_ADMIN_EMAIL}
+properties:
+  - name: config.ui.backend.server.max.request.header.size
+    value: "32KiB"
+  - name: config.ui.backend.server.max.response.header.size
+    value: "32KiB"
+  - name: config.ui.backend.websocket.max.header.size
+    value: "32768"
+EOF
+
+chmod 600 \
+  "$HOME/.stanctl/values/instana-core/custom-values.yaml" \
+  "$HOME/.stanctl/values/instana-unit/custom-values.yaml"
 ```
 
-Dentro:
+### 15.3 Validar los archivos
 
 ```bash
+source /root/instana-install/instana-vars.env
+
+grep -nE \
+  'gatewayConfig:|concert:|solis.hub.external.url|feature.solis.enabled|feature.solis.jwt.enabled|feature.remote.integrations.enabled|feature.mcp.instana.enabled|config.solis.hub.url|config.solis.hub.environments' \
+  "$HOME/.stanctl/values/instana-core/custom-values.yaml"
+
+grep -nE \
+  'initialAdminUser|max.request.header|max.response.header|websocket.max.header' \
+  "$HOME/.stanctl/values/instana-unit/custom-values.yaml"
+```
+
+No sustituir `config.solis.hub.url` por la Route pública. Esa propiedad utiliza el servicio interno `concert-gateway` de Instana.
+
+## 16. Instalar con integración Concert habilitada
+
+### 16.1 Comprobar versión y recursos
+
+```bash
+stanctl --version
+nproc
+free -h
+```
+
+Se requiere `stanctl` 1.14.1 o posterior y el sizing adicional de Concert.
+
+### 16.2 Capturar secretos en memoria
+
+```bash
+source /root/instana-install/instana-vars.env
+set +x
+
+read -r -s -p "Instana Download Key / Agent Key: " STANCTL_DOWNLOAD_KEY
+echo
+read -r -s -p "Instana Sales Key: " STANCTL_SALES_KEY
+echo
+read -r -s -p "Password del administrador inicial: " STANCTL_UNIT_INITIAL_ADMIN_PASSWORD
+echo
+
+export STANCTL_DOWNLOAD_KEY
+export STANCTL_CLUSTER_PASSWORD="$STANCTL_DOWNLOAD_KEY"
+export STANCTL_REGISTRY_PASSWORD="$STANCTL_DOWNLOAD_KEY"
+export STANCTL_HELM_REPO_PASSWORD="$STANCTL_DOWNLOAD_KEY"
+export STANCTL_SALES_KEY
+export STANCTL_UNIT_AGENT_KEY="$STANCTL_DOWNLOAD_KEY"
+export STANCTL_UNIT_INITIAL_ADMIN_PASSWORD
+```
+
+### 16.3 Ejecutar la instalación
+
+```bash
+source /root/instana-install/instana-vars.env
+
 cd /root/instana-install
 
+tmux new -s instana-concert
+```
+
+Dentro de `tmux`:
+
+```bash
 stanctl up \
+  --concert-platform-enabled \
   --env-file /root/instana-install/.env \
+  --core-acceptors-agent-host="$AGENT_FQDN" \
+  --core-acceptors-agent-port=8443 \
+  --core-acceptors-opamp-host="$OPAMP_FQDN" \
+  --core-acceptors-opamp-port=8443 \
+  --core-acceptors-otlp-grpc-host="$OTLP_GRPC_FQDN" \
+  --core-acceptors-otlp-grpc-port=8443 \
+  --core-acceptors-otlp-http-host="$OTLP_HTTP_FQDN" \
+  --core-acceptors-otlp-http-port=8443 \
+  --core-acceptors-eum-port=8443 \
+  --core-acceptors-serverless-port=8443 \
+  --core-acceptors-synthetics-port=8443 \
   --plain \
   --timeout 2h
 ```
 
-No interrumpir solo porque una fase no imprime progreso.
-
-Desde otra sesión:
+Después de que `stanctl` haya cargado los valores, eliminar los secretos de la shell:
 
 ```bash
-pgrep -af stanctl
+unset STANCTL_DOWNLOAD_KEY STANCTL_CLUSTER_PASSWORD
+unset STANCTL_REGISTRY_PASSWORD STANCTL_HELM_REPO_PASSWORD
+unset STANCTL_SALES_KEY STANCTL_UNIT_AGENT_KEY
+unset STANCTL_UNIT_INITIAL_ADMIN_PASSWORD
+```
+
+### 16.4 Seguimiento desde otra sesión
+
+```bash
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
 kubectl get nodes -o wide
+kubectl get core instana-core -n instana-core
+kubectl get unit instana-unit -n instana-unit
 kubectl get pods -A -o wide
 kubectl get pvc -A
 kubectl get events -A --sort-by=.lastTimestamp | tail -n 100
 ```
 
----
+### 16.5 Evidencia esperada
+
+```text
+Successfully installed Instana Self-Hosted Standard Edition
+Core componentsStatus=Ready
+Unit componentsStatus=Ready
+concert-gateway Ready=1
+mcp-instana Ready=1
+remote-integrations Ready=1
+```
 
 ## 17. Recuperación del caso ClickHouse
 
@@ -1333,6 +1613,57 @@ Ready          True
 ```
 
 ---
+
+
+
+### 18.8 Validar la integración con Concert
+
+```bash
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+source /root/instana-install/instana-vars.env
+
+CORE_STATUS="$(
+  kubectl get core instana-core -n instana-core \
+    -o jsonpath='{.status.componentsStatus}'
+)"
+UNIT_STATUS="$(
+  kubectl get unit instana-unit -n instana-unit \
+    -o jsonpath='{.status.componentsStatus}'
+)"
+
+printf 'Core=%s\nUnit=%s\n' "$CORE_STATUS" "$UNIT_STATUS"
+
+kubectl get deployment \
+  concert-gateway mcp-instana remote-integrations \
+  -n instana-core \
+  -o custom-columns='NAME:.metadata.name,DESIRED:.spec.replicas,READY:.status.readyReplicas,AVAILABLE:.status.availableReplicas'
+
+kubectl get core instana-core -n instana-core -o json |
+jq '{
+  concert: .spec.gatewayConfig.concert,
+  flags: [(.spec.featureFlags // [])[] |
+    select(
+      .name == "feature.solis.enabled" or
+      .name == "feature.solis.jwt.enabled" or
+      .name == "feature.remote.integrations.enabled" or
+      .name == "feature.mcp.instana.enabled"
+    )]
+}'
+
+[ "$CORE_STATUS" = "Ready" ]
+[ "$UNIT_STATUS" = "Ready" ]
+
+echo "INSTANA_CONCERT_BACKEND=READY"
+```
+
+Verificar que `gatewayConfig.concert.internalTLSSecretName` tenga un valor y que el certificado presentado por el servicio interno incluya:
+
+```text
+concert-gateway.instana-core.svc.cluster.local
+```
+
+La instalación con `--concert-platform-enabled` debe preparar esta configuración. Si `ui-backend` presenta errores JWK, PKIX o SAN, revisar el Anexo 26.2.
+
 
 ## 19. Pruebas con `curl`
 
@@ -1638,7 +1969,122 @@ df -hT / /mnt/instana/stanctl
 
 ---
 
-## 25. Referencias
+
+
+## 25. Anexo de resolución de errores Concert-ready
+
+### 25.1 Pods pendientes por `Insufficient memory`
+
+#### Síntoma
+
+```text
+0/1 nodes are available: 1 Insufficient memory
+```
+
+#### Explicación
+
+El scheduler usa `requests`, no la salida de `free -h`. Un nodo puede mostrar memoria física libre y, al mismo tiempo, tener 98 % de memoria reservada.
+
+#### Diagnóstico
+
+```bash
+kubectl describe node instana-0 |
+sed -n '/Allocated resources:/,/Events:/p'
+
+kubectl get pods -A \
+  --field-selector=status.phase=Pending -o wide
+```
+
+#### Corrección recomendada
+
+Aumentar el host con al menos +2 CPU/+10 GB sobre el sizing standalone. Para laboratorio, 20 vCPU/80 GB aporta margen.
+
+No reducir requests editando Deployments administrados por el operador.
+
+### 25.2 Pods deshabilitados quedan en `Terminating`
+
+Antes de forzar una eliminación, comprobar que el Deployment correspondiente tenga cero réplicas. Después:
+
+```bash
+kubectl delete pod <pod> -n instana-core \
+  --grace-period=0 --force --wait=false
+```
+
+No eliminar `ui-backend`, `ui-client`, `issue-tracker` o componentes que deban arrancar después de liberar memoria.
+
+### 25.3 Error JWK por confianza TLS
+
+```text
+PKIX path building failed
+unable to initialize JWK
+```
+
+Confirma que la integración JWT está activa, pero la JVM no confía en el certificado interno.
+
+### 25.4 Error JWK por hostname/SAN
+
+```text
+Certificate for <concert-gateway.instana-core.svc.cluster.local>
+doesn't match any of the subject alternative names
+```
+
+El certificado debe incluir los SAN internos del servicio. Como recuperación:
+
+1. generar una CA interna;
+2. emitir un certificado para los cuatro nombres del servicio;
+3. crear un Secret TLS;
+4. configurar `gatewayConfig.concert.internalTLSSecretName`;
+5. importar la CA mediante `stanctl backend apply --core-custom-ca-crt`.
+
+Ejemplo de configuración:
+
+```yaml
+gatewayConfig:
+  concert:
+    internalTLSSecretName: concert-gateway-internal-tls
+```
+
+Aplicación:
+
+```bash
+stanctl backend apply \
+  --core-custom-ca-crt /root/instana-install/certificates/concert-internal-ca.crt \
+  --core-update-strategy=Recreate
+```
+
+### 25.5 Conversión de una instalación existente
+
+La ruta preferida es instalar con `--concert-platform-enabled`. Cuando ya existe una instalación standalone:
+
+1. respaldar los CR y custom values;
+2. crear los custom values de Concert;
+3. verificar recursos antes de habilitar todas las funciones;
+4. ejecutar `stanctl backend apply`;
+5. validar TLS interno;
+6. no asumir que `stanctl up --help` confirma la aceptación de un flag, porque la ayuda puede finalizar antes del parser completo.
+
+### 25.6 OpenShift no resuelve el FQDN de Instana
+
+`/etc/hosts` del servidor Instana o del host administrativo no se replica a OpenShift. Crear DNS corporativo o configurar un forward por zona en el DNS Operator. Validar primero red con:
+
+```bash
+curl -k \
+  --resolve "${UNIT_FQDN}:443:${INSTANA_IP}" \
+  "https://${UNIT_FQDN}/"
+```
+
+HTTP `401` antes de Keycloak es válido.
+
+### 25.7 La IP responde diferente al FQDN
+
+El gateway utiliza TLS SNI y Host header. No sustituir una prueba por FQDN con `curl https://<IP>`.
+
+### 25.8 Perfil temporal con funciones de IA deshabilitadas
+
+Puede utilizarse únicamente para diagnóstico o para liberar recursos en un PoC. No debe documentarse como perfil final soportado de Concert Observe. La solución definitiva es cumplir el sizing.
+
+
+## 26. Referencias
 
 - [Installing Self-Hosted Standard Edition](https://www.ibm.com/docs/en/instana-observability?topic=backend-installing-standard-edition)
 - [System requirements for a single-node deployment](https://www.ibm.com/docs/en/instana-observability?topic=cluster-system-requirements)
@@ -1646,3 +2092,9 @@ df -hT / /mnt/instana/stanctl
 - [Installing Standard Edition online](https://www.ibm.com/docs/en/instana-observability?topic=installing-standard-edition-in-online-environment)
 - [OpenTelemetry to the Instana backend](https://www.ibm.com/docs/en/instana-observability?topic=instana-backend)
 - [Troubleshooting](https://www.ibm.com/docs/en/instana-observability?topic=edition-troubleshooting-debugging)
+
+
+- [Installing Self-Hosted Standard Edition for IBM Concert platform](https://www.ibm.com/docs/en/instana-observability?topic=edition-installing-standard-concert-platform)
+- [IBM Concert Platform — Installing the platform hub](https://www.ibm.com/docs/en/concert-platform?topic=guide-installing-platform-hub)
+- [IBM Concert Platform — Installing the data access layer](https://www.ibm.com/docs/en/concert-platform?topic=guide-installing-data-access-layer)
+- [IBM Concert Platform — Configuring authentication](https://www.ibm.com/docs/en/concert-platform?topic=guide-configuring-authentication)
