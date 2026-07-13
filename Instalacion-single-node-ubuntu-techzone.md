@@ -1,8 +1,8 @@
 # Laboratorio de IBM Instana Self-Hosted Standard Edition sobre Ubuntu 22.04 preparado para IBM Concert Platform
 
-> Manual específico y reproducible para preparar, instalar, publicar y validar un laboratorio single-node de IBM Instana Self-Hosted Standard Edition sobre Ubuntu 22.04, dejándolo habilitado desde la instalación como capacidad Concert Observe. Conserva el caso real ejecutado en IBM Cloud y añade el perfil Concert-ready, los custom values, el dimensionamiento adicional y la resolución de las incidencias observadas durante una conversión posterior.
+> Manual específico y reproducible para preparar, instalar, publicar y validar un laboratorio single-node de IBM Instana Self-Hosted Standard Edition sobre Ubuntu 22.04, preparándolo como capacidad Concert Observe mediante custom values de Core y Unit. Conserva el caso real ejecutado en IBM Cloud, las correcciones aplicadas y el bloqueo final identificado en el endpoint `/platform_hub/mfes/login`.
 
-**Última revisión:** julio de 2026  
+**Última revisión:** 13 de julio de 2026  
 **Archivo sugerido para el repositorio:** `Instalacion-single-node-ubuntu-techzone-concert-ready.md`
 
 ---
@@ -26,7 +26,7 @@ No utilizar este perfil como arquitectura productiva.
 
 ## 1.1 Ruta recomendada para Concert Observe
 
-Este documento utiliza como ruta principal una **instalación nueva Concert-ready**. No se recomienda instalar primero un backend estándar y convertirlo después, porque esa conversión puede dejar pendientes de capacidad, certificados internos o feature flags.
+La ruta principal consiste en preparar los custom values de Concert **antes** de instalar el backend. Para una instalación existente, se pueden incorporar o corregir esos valores mediante `stanctl backend apply`.
 
 Orden recomendado:
 
@@ -34,14 +34,17 @@ Orden recomendado:
 2. instalar TurboLite y publicar su Route;
 3. confirmar las URLs públicas de Hub y TurboLite;
 4. preparar el host Instana con el sizing adicional;
-5. crear los custom values de Core y Unit;
-6. instalar con `stanctl up --concert-platform-enabled`;
-7. validar Core, Unit y Concert Gateway;
+5. crear los custom values de Core y Unit con `gatewayConfig.concert`, feature flags y propiedades `config.solis.*`;
+6. ejecutar la instalación estándar con `stanctl up --env-file ...`;
+7. validar Core, Unit, Concert Gateway y los componentes de integración;
 8. asegurar que OpenShift resuelva y alcance el FQDN de Instana;
 9. adjuntar Instana al Hub;
-10. ejecutar `setup-keycloak.sh` desde el host administrativo de Concert.
+10. ejecutar `setup-keycloak.sh` desde el host administrativo de Concert;
+11. validar las redirect URI y la navegación unificada.
 
-> Platform Hub e Instana deben desplegarse en clusters separados. Para usar Instana como capacidad de Concert, IBM requiere agregar **2 CPU y 10 GB de RAM** al sizing normal de Instana. Para este laboratorio single-node se recomienda provisionar **20 vCPU y 80 GB de RAM** para disponer de margen, aunque el mínimo adicional documentado es +2 CPU/+10 GB.
+> Platform Hub e Instana deben desplegarse en clusters separados. Para usar Instana como capacidad de Concert, considerar los recursos adicionales definidos por IBM sobre el sizing normal de Instana. En este laboratorio se provisionó un perfil superior al standalone para disponer de margen.
+
+> **Corrección de versión:** el `stanctl 1.14.1` utilizado en el laboratorio no expone `--concert-platform-enabled`. No usar ese flag. Los valores Concert-ready se aplican mediante los archivos `custom-values.yaml`, `stanctl up` y, cuando corresponda, `stanctl backend apply`.
 
 ### Perfil de esta guía
 
@@ -49,9 +52,11 @@ Orden recomendado:
 Tipo: laboratorio single-node
 Instana: Self-Hosted Standard Edition
 Concert: Platform 3.0.0
-Stanctl: 1.14.1 o posterior
+Stanctl validado: 1.14.1
+Backend validado: 3.319.484-0
 Instalación: online
-Integración: habilitada desde stanctl up
+Integración: custom values + gatewayConfig.concert
+Estado final: backend Ready; navegación unificada bloqueada por HTTP 404
 ```
 
 ### Datos que deben existir antes de instalar Instana
@@ -64,7 +69,6 @@ TENANT_NAME=<tenant>
 UNIT_NAME=<unit>
 INITIAL_ADMIN_EMAIL=<correo-válido>
 ```
-
 
 ## 2. Ambiente validado
 
@@ -1306,7 +1310,7 @@ grep -nE \
 
 No sustituir `config.solis.hub.url` por la Route pública. Esa propiedad utiliza el servicio interno `concert-gateway` de Instana.
 
-## 16. Instalar con integración Concert habilitada
+## 16. Instalar con custom values de Concert
 
 ### 16.1 Comprobar versión y recursos
 
@@ -1354,7 +1358,6 @@ Dentro de `tmux`:
 
 ```bash
 stanctl up \
-  --concert-platform-enabled \
   --env-file /root/instana-install/.env \
   --core-acceptors-agent-host="$AGENT_FQDN" \
   --core-acceptors-agent-port=8443 \
@@ -1631,12 +1634,14 @@ UNIT_STATUS="$(
     -o jsonpath='{.status.componentsStatus}'
 )"
 
-printf 'Core=%s\nUnit=%s\n' "$CORE_STATUS" "$UNIT_STATUS"
+printf 'Core=%s
+Unit=%s
+' "$CORE_STATUS" "$UNIT_STATUS"
 
 kubectl get deployment \
-  concert-gateway mcp-instana remote-integrations \
+  concert-gateway mcp-instana remote-integrations ui-client \
   -n instana-core \
-  -o custom-columns='NAME:.metadata.name,DESIRED:.spec.replicas,READY:.status.readyReplicas,AVAILABLE:.status.availableReplicas'
+  -o custom-columns='NAME:.metadata.name,DESIRED:.spec.replicas,READY:.status.readyReplicas,AVAILABLE:.status.availableReplicas,IMAGE:.spec.template.spec.containers[0].image'
 
 kubectl get core instana-core -n instana-core -o json |
 jq '{
@@ -1656,14 +1661,43 @@ jq '{
 echo "INSTANA_CONCERT_BACKEND=READY"
 ```
 
-Verificar que `gatewayConfig.concert.internalTLSSecretName` tenga un valor y que el certificado presentado por el servicio interno incluya:
+Verificar también que `gatewayConfig.concert.internalTLSSecretName` tenga un valor y que el certificado presentado por el servicio interno incluya:
 
 ```text
 concert-gateway.instana-core.svc.cluster.local
 ```
 
-La instalación con `--concert-platform-enabled` debe preparar esta configuración. Si `ui-backend` presenta errores JWK, PKIX o SAN, revisar el Anexo 26.2.
+### 18.8.1 Validar la ruta pública requerida por Platform Hub
 
+```bash
+source /root/instana-install/instana-vars.env
+
+INSTANA_URL="https://${UNIT_FQDN}"
+
+curl -ksS \
+  -A 'Mozilla/5.0' \
+  -H 'Accept: text/html,application/json,*/*' \
+  -o /tmp/platform-hub-login.body \
+  -w 'HTTP_CODE=%{http_code}
+CONTENT_TYPE=%{content_type}
+' \
+  "${INSTANA_URL}/platform_hub/mfes/login?product-name=Instana"
+
+rm -f /tmp/platform-hub-login.body
+```
+
+Un resultado `200`, redirección `3xx`, `401` o `403` demuestra que la ruta existe y está protegida o redirigida. Un `404` significa que el endpoint no está publicado y la navegación unificada no puede cerrarse.
+
+### Evidencia del laboratorio
+
+```text
+ui_client_image=artifact-public.instana.io/backend/ui-client:3.319.484-0
+Core=Ready
+Unit=Ready
+/platform_hub/mfes/login?product-name=Instana -> HTTP 404
+```
+
+La reaplicación de los custom values mediante `stanctl backend apply` terminó con retorno `0`, pero no cambió el `404`. La incidencia se escaló a IBM Support.
 
 ## 19. Pruebas con `curl`
 
@@ -1941,31 +1975,32 @@ df -hT / /mnt/instana/stanctl
 
 ## 24. Checklist final
 
-| Validación | Resultado |
+| Validación | Resultado del laboratorio |
 |---|---|
 | Ubuntu | 22.04.5 LTS |
 | SSH | puerto detectado y preservado mediante `$SSH_PORT` |
 | Hostname | descubierto mediante `hostnamectl --static` |
 | Base domain | confirmado y guardado en `instana-vars.env` |
-| Laptop hosts | generado con variables y apunta a la Floating IP confirmada |
-| Server hosts | apunta a IP privada |
-| Agent Key | misma usada como Download Key |
-| Sales Key | diferente |
-| CPU / RAM | 16 vCPU / 62 GiB visibles |
+| Unit URL | `https://unit0-tenant0.<base-domain>` |
+| Agent Key / Download Key | protegidas; no registradas en evidencias |
+| Sales Key | protegida |
+| CPU / RAM | perfil de laboratorio validado; revisar sizing para producción |
 | Swap | 0 |
 | THP | `[never]` |
 | `/dev/vdd1` | XFS |
 | Mount | `/mnt/instana/stanctl` |
-| Core | Ready / Ready |
-| Unit | Ready / Ready |
-| Pods | Running / Ready |
-| ClickHouse | `Ok.` |
-| Gateway | 443 operativo |
-| UI | 301/401 esperado |
-| OTLP/HTTP | probado |
-| OTLP/gRPC | endpoint configurado |
-| PVC | revisar; todos deberían estar Bound |
-| Secretos | protegidos |
+| Core | Ready |
+| Unit | Ready |
+| Concert Gateway | Ready |
+| MCP Instana | Ready |
+| Remote Integrations | Ready |
+| TLS interno | `concert-gateway-internal-tls` aplicado |
+| OpenShift → Instana | DNS y HTTPS validados |
+| Adjuntar al Hub | completado mediante `manage-product.sh` |
+| Keycloak redirect URI | corregidas y validadas |
+| `/platform_hub/mfes/login` | `HTTP 404` — bloqueo abierto |
+| Paquete de soporte | generado |
+| Secretos | protegidos y logs saneados |
 
 ---
 
@@ -2052,16 +2087,24 @@ stanctl backend apply \
   --core-update-strategy=Recreate
 ```
 
-### 25.5 Conversión de una instalación existente
+### 25.5 Incorporar Concert a una instalación existente
 
-La ruta preferida es instalar con `--concert-platform-enabled`. Cuando ya existe una instalación standalone:
+Cuando ya existe una instalación standalone:
 
-1. respaldar los CR y custom values;
-2. crear los custom values de Concert;
-3. verificar recursos antes de habilitar todas las funciones;
-4. ejecutar `stanctl backend apply`;
-5. validar TLS interno;
-6. no asumir que `stanctl up --help` confirma la aceptación de un flag, porque la ayuda puede finalizar antes del parser completo.
+1. respaldar los CR `Core` y `Unit` y los custom values;
+2. agregar `gatewayConfig.concert`, los feature flags y las propiedades `config.solis.*` documentadas;
+3. validar recursos y memoria antes de habilitar funciones adicionales;
+4. ejecutar:
+
+```bash
+stanctl backend apply --env-file /root/instana-install/.env
+```
+
+5. validar `concert-gateway`, `mcp-instana`, `remote-integrations`, Core y Unit;
+6. validar TLS interno y la ruta pública `/platform_hub/mfes/login`;
+7. no editar Deployments o ConfigMaps administrados por el operador.
+
+No usar `--concert-platform-enabled` en `stanctl 1.14.1`: la opción no se encuentra disponible en esa versión.
 
 ### 25.6 OpenShift no resuelve el FQDN de Instana
 
@@ -2084,17 +2127,88 @@ El gateway utiliza TLS SNI y Host header. No sustituir una prueba por FQDN con `
 Puede utilizarse únicamente para diagnóstico o para liberar recursos en un PoC. No debe documentarse como perfil final soportado de Concert Observe. La solución definitiva es cumplir el sizing.
 
 
+
+### 25.9 Keycloak rechaza la callback de Instana
+
+Síntoma:
+
+```text
+error="invalid_redirect_uri"
+```
+
+El cliente `concert-client` debe aceptar la URI absoluta:
+
+```text
+https://<unit>-<tenant>.<base-domain>/platform_hub/*
+```
+
+La corrección se realiza en Keycloak, no en el backend Instana. Conservar las URI existentes, agregar el patrón absoluto y validar que el endpoint de autorización devuelva `HTTP 200` sin `invalid_redirect_uri`.
+
+### 25.10 El dominio base y la URL Unit/Tenant responden distinto
+
+En Standard Edition, la URL de instancia y API utiliza Unit/Tenant. En el laboratorio:
+
+```text
+https://<base-domain>/...                  -> 301 /auth/signIn
+https://unit0-tenant0.<base-domain>/...   -> endpoint de la UI de Unit/Tenant
+```
+
+No registrar automáticamente el dominio base en `manage-product.sh` solo porque devuelva una redirección. Utilizar la URL real de la instancia que se usa para la UI y API.
+
+### 25.11 `/platform_hub/mfes/login` devuelve `404`
+
+Condiciones comprobadas:
+
+```text
+Core=Ready
+Unit=Ready
+concert-gateway=Ready
+mcp-instana=Ready
+remote-integrations=Ready
+DNS/TLS=OK
+Keycloak redirect URI=OK
+```
+
+Si el endpoint continúa en `404` después de `stanctl backend apply`, detener cambios manuales. Recolectar:
+
+- imagen y digest de `ui-client`;
+- estado de Core y Unit;
+- cabeceras y código HTTP del endpoint;
+- logs saneados de `ui-client`;
+- custom values y CR saneados;
+- evidencia de Keycloak sin secretos.
+
+En el laboratorio se generó:
+
+```text
+/root/ibm-concert-validation/instana-concert-support-20260713T060124Z.tar.gz
+SHA-256: de1b1e547b21b4d7a34ed333609734b8a0b9223c1eb8fe848944641b3709966e
+```
+
+### 25.12 Estado final del laboratorio
+
+```text
+Instana backend           = READY
+Concert Gateway           = READY
+Platform Hub attachment   = OK
+Keycloak redirect URIs    = OK
+Integrated UI endpoint    = HTTP 404
+Unified navigation        = BLOCKED
+IBM Support               = REQUIRED
+```
+
+
 ## 26. Referencias
 
 - [Installing Self-Hosted Standard Edition](https://www.ibm.com/docs/en/instana-observability?topic=backend-installing-standard-edition)
 - [System requirements for a single-node deployment](https://www.ibm.com/docs/en/instana-observability?topic=cluster-system-requirements)
 - [Preparing for a single-node deployment](https://www.ibm.com/docs/en/instana-observability?topic=cluster-preparing)
 - [Installing Standard Edition online](https://www.ibm.com/docs/en/instana-observability?topic=installing-standard-edition-in-online-environment)
+- [Configuring Instana](https://www.ibm.com/docs/en/instana-observability?topic=edition-configuring)
 - [OpenTelemetry to the Instana backend](https://www.ibm.com/docs/en/instana-observability?topic=instana-backend)
 - [Troubleshooting](https://www.ibm.com/docs/en/instana-observability?topic=edition-troubleshooting-debugging)
-
-
 - [Installing Self-Hosted Standard Edition for IBM Concert platform](https://www.ibm.com/docs/en/instana-observability?topic=edition-installing-standard-concert-platform)
 - [IBM Concert Platform — Installing the platform hub](https://www.ibm.com/docs/en/concert-platform?topic=guide-installing-platform-hub)
 - [IBM Concert Platform — Installing the data access layer](https://www.ibm.com/docs/en/concert-platform?topic=guide-installing-data-access-layer)
 - [IBM Concert Platform — Configuring authentication](https://www.ibm.com/docs/en/concert-platform?topic=guide-configuring-authentication)
+- [IBM Concert Platform — Installing capabilities](https://www.ibm.com/docs/en/concert-platform?topic=guide-installing-capabilities)
