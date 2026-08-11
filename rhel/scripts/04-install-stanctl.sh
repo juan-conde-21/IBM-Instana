@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[[ $EUID -eq 0 && -t 0 ]] || { echo 'ERROR: ejecutar como root desde terminal interactiva.'; exit 1; }
-printf '\nLa Official Agent Key / Download Key es proporcionada por el equipo de IBM.\n'
-read -r -s -p 'OFFICIAL_AGENT_KEY / DOWNLOAD_KEY: ' DOWNLOAD_KEY; echo; DOWNLOAD_KEY="${DOWNLOAD_KEY//$'\r'/}"; [[ -n "$DOWNLOAD_KEY" ]] || exit 1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$REPO_ROOT/common/lib/runbook.sh"
+start_phase "05-stanctl" "05 - INSTALAR STANCTL EN RHEL"
+require_root
+require_tty
+
+echo "La Official Agent Key / Download Key es proporcionada por el equipo de IBM."
+DOWNLOAD_KEY="$(read_secret 'OFFICIAL_AGENT_KEY / DOWNLOAD_KEY: ')" || runbook_fail STAN-RHEL-001 "Download Key vacía."
+
 REPO=/etc/yum.repos.d/Instana-Product.repo
 cat > "$REPO" <<EOF
 [instana-product]
@@ -10,11 +17,17 @@ name=Instana-Product
 baseurl=https://_:${DOWNLOAD_KEY}@artifact-public.instana.io/artifactory/rel-rpm-public-virtual/
 enabled=1
 gpgcheck=0
+gpgkey=https://_:${DOWNLOAD_KEY}@artifact-public.instana.io/artifactory/api/security/keypair/public/repositories/rel-rpm-public-virtual
+repo_gpgcheck=1
 EOF
 chmod 600 "$REPO"
-yum clean expire-cache -y; yum makecache -y; yum install -y stanctl python3-dnf-plugin-versionlock; yum versionlock add stanctl || true
-stanctl --version
-# Evitar dejar la credencial activa en texto plano después de instalar.
-sed -i 's#^baseurl=.*#baseurl=https://_:REDACTED@artifact-public.instana.io/artifactory/rel-rpm-public-virtual/#; s/^enabled=1/enabled=0/' "$REPO"
 unset DOWNLOAD_KEY
-echo 'STANCTL INSTALADO. El repo queda deshabilitado/redactado; rerun del script para futuras actualizaciones.'
+
+yum clean expire-cache -y
+yum makecache -y || runbook_fail STAN-RHEL-002 "No se pudo refrescar el repositorio Instana. Verifique Download Key y conectividad."
+yum install -y stanctl python3-dnf-plugin-versionlock
+yum versionlock add stanctl || true
+
+stanctl --version
+runbook_warn "$REPO contiene la Download Key y tiene permisos 600. No lo publique ni lo adjunte."
+runbook_pass "stanctl instalado y fijado con versionlock."

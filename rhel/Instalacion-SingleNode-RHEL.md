@@ -1,167 +1,71 @@
-# IBM Instana Self-Hosted Standard Edition — RHEL
+# Instalación Single-Node — RHEL
 
-Runbook paso a paso para una instalación **Single-Node online sobre RHEL 8/9/10**.
-
-Este procedimiento mantiene el mismo flujo conceptual que Ubuntu, pero los comandos de preparación del host son específicos de Red Hat Enterprise Linux.
-
-> **Regla del runbook:** no continúe al siguiente paso si el actual devuelve `FAIL`, `ERROR` o un resultado distinto al esperado.
-
-## 0. Preparar la sesión
+Esta guía amplía [`README.md`](README.md). Ejecute siempre desde:
 
 ```bash
 sudo -i
 cd /opt/IBM-Instana
-pwd
-git rev-parse --short HEAD
 ```
 
-Resultado esperado:
-
-```text
-/opt/IBM-Instana
-<commit-del-repositorio>
-```
-
----
-
-## 1. Precheck RHEL
+## Fase 00 — Precheck
 
 ```bash
 ./rhel/scripts/00-precheck.sh
 ```
 
-Valida:
+Debe terminar `PASS / READY`.
 
-- RHEL como sistema operativo;
-- 16 vCPU o más;
-- 64 GB de RAM o más;
-- CPU `x86-64-v3`;
-- DNS y conectividad HTTPS hacia los repositorios requeridos.
+Valida como mínimo RHEL, 16 CPU, 64 GB, x86-64-v3, DNS y salida HTTPS.
 
-Resultado esperado:
-
-```text
-PRECHECK: PASS
-```
-
-No continúe si aparece `FAIL`.
-
----
-
-## 2. Identidad y DNS
+## Fase 01 — Objetivo e identidad
 
 ```bash
 ./rhel/scripts/01-config-vars.sh
 ```
 
-El script solicitará:
+El asistente pregunta:
 
-```text
-IPv4 interna del servidor
-Base Domain de Instana
-Tenant
-Unit
-```
+- objetivo: POC temporal / POC→PROD / producción;
+- nombre de organización;
+- Tenant técnico;
+- Unit;
+- IP interna;
+- Base Domain.
 
-El Base Domain se define expresamente y no se deriva del hostname Linux.
+Tenant/Unit requieren confirmación explícita porque no pueden cambiarse después de instalar.
 
-Se genera:
-
-```text
-/root/instana-install/instana-vars.env
-```
-
-Una vez creados los registros internos, valide:
+## Fase 02 — Storage
 
 ```bash
-./common/dns-check.sh
+./common/prepare-storage.sh
 ```
 
----
+El perfil se toma automáticamente del objetivo.
 
-## 3. Storage
+- `poc500`: discovery y propuesta; use `--apply` solo después de revisar.
+- `ibm-demo` / `ibm-production`: no formatea discos; exige `storage-layout.env`.
 
-El procedimiento de storage es común a Ubuntu y RHEL.
+Consulte [`../docs/Sizing-and-Storage.md`](../docs/Sizing-and-Storage.md).
 
-Primero ejecute únicamente discovery:
-
-```bash
-./common/prepare-storage.sh --profile poc500
-```
-
-Revise la propuesta antes de aplicar cambios.
-
-### Usar el VG existente
-
-Si el script detecta al menos 500 GiB libres en el VG permitido para la POC:
-
-```bash
-./common/prepare-storage.sh --profile poc500 --apply
-```
-
-### Usar un disco adicional dedicado y vacío
-
-```bash
-./common/prepare-storage.sh --profile poc500 --device /dev/sdb
-```
-
-Después de revisar la propuesta:
-
-```bash
-./common/prepare-storage.sh --profile poc500 --device /dev/sdb --apply
-```
-
-### Mount points entregados por infraestructura
-
-```bash
-mkdir -p /root/instana-install
-cp common/storage-layout.env.example /root/instana-install/storage-layout.env
-vi /root/instana-install/storage-layout.env
-./common/prepare-storage.sh --profile poc500
-./common/validate-storage.sh
-```
-
-En este modo no se crean filesystems ni se modifica `/etc/fstab`.
-
-El perfil `poc500` es una excepción operacional para laboratorio/POC y no reemplaza el sizing oficial de IBM.
-
----
-
-## 4. Preparar RHEL
+## Fase 03 — Preparar RHEL
 
 ```bash
 ./rhel/scripts/02-prepare-rhel.sh
 ```
 
-El script prepara:
-
-- paquetes mediante `dnf`;
-- `chronyd`;
-- módulos `overlay` y `br_netfilter`;
-- parámetros `sysctl`;
-- Swap deshabilitado;
-- THP mediante `grubby`;
-- `firewalld` si ya se encuentra activo;
-- `/usr/local/bin` en `PATH`;
-- `nm-cloud-setup` deshabilitado cuando está presente.
-
-Resultado esperado:
+Debe terminar:
 
 ```text
-PREPARACIÓN COMPLETA. REBOOT REQUIRED.
+REBOOT REQUIRED
 ```
 
 Reinicie:
 
 ```bash
-reboot
+systemctl reboot
 ```
 
----
-
-## 5. Validación post-reboot
-
-Después de reconectarse:
+## Fase 04 — Post reboot
 
 ```bash
 sudo -i
@@ -169,92 +73,55 @@ cd /opt/IBM-Instana
 ./rhel/scripts/03-post-reboot-check.sh
 ```
 
-Resultado requerido:
+No continúe hasta `PASS / READY`.
 
-```text
-RESULTADO: READY
-```
-
-No instale `stanctl` si el resultado es `NOT READY`.
-
----
-
-## 6. Instalar `stanctl`
-
-La **Official Agent Key / Download Key es proporcionada por el equipo de IBM**.
-
-Ejecute:
+## Fase 05 — stanctl
 
 ```bash
 ./rhel/scripts/04-install-stanctl.sh
 ```
 
-La clave se solicita de forma oculta. El repositorio RPM queda redactado/deshabilitado al finalizar para no conservar la credencial activa en texto plano.
+La Official Agent Key / Download Key es proporcionada por el equipo de IBM.
 
-Valide:
+El script valida el repositorio antes de instalar `stanctl`.
 
-```bash
-stanctl --version
-```
-
----
-
-## 7. Crear `.env`
+## Fase 06 — .env
 
 ```bash
 ./rhel/scripts/05-create-env.sh
 ```
 
-El archivo queda en:
+El script consulta `stanctl up --help` y se detiene si la versión instalada no publica los parámetros requeridos.
 
-```text
-/root/instana-install/.env
-```
+No guarda Sales Key, Download Key ni password en `.env`.
 
-y no contiene las credenciales de IBM.
-
----
-
-## 8. Instalar Instana
-
-Ejecute:
+## Fase 07 — Instalar
 
 ```bash
 ./rhel/scripts/06-install-instana.sh
 ```
 
-Se solicitarán ocultamente:
+El script crea/usa `tmux`, solicita las credenciales ocultas dentro de la sesión y ejecuta `stanctl up` en el mismo proceso.
+
+Desacoplar:
 
 ```text
-OFFICIAL_AGENT_KEY / DOWNLOAD_KEY   ← proporcionada por IBM
-SALES_KEY                           ← proporcionada por IBM
-ADMIN_PASSWORD inicial
+Ctrl+b
+d
 ```
 
-La instalación se ejecuta en una sesión `tmux` llamada `instana-install`.
-
-Para visualizarla:
+Volver:
 
 ```bash
 tmux attach -t instana-install
 ```
 
-Para salir sin detenerla:
+Si finaliza correctamente muestra `SUCCESS`.
 
-```text
-Ctrl+b
-D
+Si falla muestra `INST-010`; no vuelva a correr `stanctl up` sin revisar el log.
+
+## Estado
+
+```bash
+./common/status.sh
 ```
-
----
-
-## 9. Troubleshooting
-
-- [`../troubleshooting/RHEL.md`](../troubleshooting/RHEL.md)
-- [`../troubleshooting/Storage.md`](../troubleshooting/Storage.md)
-
-## Referencias
-
-- [IBM — Single-node system requirements](https://www.ibm.com/docs/en/instana-observability?topic=cluster-system-requirements)
-- [IBM — Preparing the environment](https://www.ibm.com/docs/en/instana-observability?topic=cluster-preparing)
-- [IBM — Adding repository and installing stanctl](https://www.ibm.com/docs/en/instana-observability?topic=installing-adding-instana-repository-stanctl-tool)

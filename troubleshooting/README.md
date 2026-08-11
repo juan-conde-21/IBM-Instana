@@ -1,37 +1,29 @@
-# Troubleshooting — Instalación Single-Node
+# Troubleshooting
 
-Use esta sección cuando un paso del runbook devuelva `FAIL`, `ERROR`, `NOT READY` o la instalación no avance como se espera.
+Empiece siempre por el **ERROR ID** mostrado por el script.
 
-## Primero identifique dónde falló
+1. [`Error-Codes.md`](Error-Codes.md) — catálogo principal y acciones.
+2. [`Ubuntu.md`](Ubuntu.md) — casos específicos Ubuntu.
+3. [`RHEL.md`](RHEL.md) — casos específicos RHEL.
+4. [`Storage.md`](Storage.md) — LVM, XFS, mounts y capacidad.
 
-| Área | Documento |
-|---|---|
-| Ubuntu / APT / THP / Swap | [`Ubuntu.md`](Ubuntu.md) |
-| RHEL / YUM-DNF / firewalld / grubby | [`RHEL.md`](RHEL.md) |
-| LVM / XFS / mount points / capacidad | [`Storage.md`](Storage.md) |
+Estado actual:
 
-## Regla de recuperación
+```bash
+cd /opt/IBM-Instana
+./common/status.sh
+```
 
-No ejecute repetidamente un comando destructivo esperando que el problema se corrija solo.
+Últimos logs:
 
-Antes de reintentar:
+```bash
+ls -ltr /root/instana-install/logs/
+```
 
-1. conserve la salida exacta del error;
-2. identifique el paso y script que falló;
-3. valide el estado actual del host;
-4. aplique la corrección documentada;
-5. vuelva a ejecutar únicamente el paso afectado;
-6. continúe solo cuando el resultado vuelva a ser `PASS` o `READY`.
+Si `stanctl up` falló y el cluster está activo:
 
-## Evidencias
+```bash
+stanctl diagnostics --output-dir /root/instana-install/diagnostics
+```
 
-Puede registrar salidas técnicas, pero antes de compartirlas elimine:
-
-- Agent/Download Key;
-- Sales Key;
-- contraseñas;
-- tokens;
-- certificados privados;
-- información sensible del cliente.
-
-No capture la pantalla mientras los scripts estén solicitando credenciales.
+No publique claves, passwords ni archivos locales de autenticación.

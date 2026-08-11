@@ -1,28 +1,56 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[[ $EUID -eq 0 ]] || { echo 'ERROR: ejecutar como root.'; exit 1; }
-[[ -t 0 ]] || { echo 'ERROR: se requiere terminal interactiva para ingresar la clave.'; exit 1; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$REPO_ROOT/common/lib/runbook.sh"
+start_phase "05-stanctl" "05 - INSTALAR STANCTL EN UBUNTU"
+require_root
+require_tty
+
 REPO_FILE=/etc/apt/sources.list.d/instana-product.list
-AUTH_FILE=/etc/apt/auth.conf
+AUTH_DIR=/etc/apt/auth.conf.d
+AUTH_FILE=$AUTH_DIR/instana.conf
 KEYRING=/usr/share/keyrings/instana-archive-keyring.gpg
 REPO_URL=https://artifact-public.instana.io/artifactory/rel-debian-public-virtual
 PUBKEY_URL=https://artifact-public.instana.io/artifactory/api/security/keypair/public/repositories/rel-debian-public-virtual
-if [[ -f "$REPO_FILE" ]]; then mv "$REPO_FILE" "${REPO_FILE}.disabled.$$"; OLD_REPO="${REPO_FILE}.disabled.$$"; else OLD_REPO=''; fi
+
+# Evitar que un repo Instana previamente roto bloquee el apt update base.
+OLD_REPO=""
+if [[ -f "$REPO_FILE" ]]; then
+  OLD_REPO="${REPO_FILE}.disabled.$(date +%s)"
+  mv "$REPO_FILE" "$OLD_REPO"
+fi
+
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget gnupg ca-certificates
-printf '\nLa Official Agent Key / Download Key es proporcionada por el equipo de IBM.\n'
-read -r -s -p 'OFFICIAL_AGENT_KEY / DOWNLOAD_KEY: ' DOWNLOAD_KEY; echo
-DOWNLOAD_KEY="${DOWNLOAD_KEY//$'\r'/}"; [[ -n "$DOWNLOAD_KEY" ]] || { echo 'ERROR: clave vacía'; exit 1; }
-printf 'machine artifact-public.instana.io\nlogin _\npassword %s\n' "$DOWNLOAD_KEY" > "$AUTH_FILE"; chmod 600 "$AUTH_FILE"
-TMP=$(mktemp); trap 'rm -f "$TMP"; unset DOWNLOAD_KEY' EXIT
-curl --fail --silent --show-error --location --netrc-file "$AUTH_FILE" "$PUBKEY_URL" -o "$TMP"
-grep -q 'BEGIN PGP PUBLIC KEY BLOCK' "$TMP" || { echo 'ERROR: respuesta de clave GPG inválida. Verifique Download Key.'; exit 1; }
-gpg --batch --yes --dearmor --output "$KEYRING" "$TMP"; chmod 644 "$KEYRING"
-printf 'deb [signed-by=%s] %s generic main\n' "$KEYRING" "$REPO_URL" > "$REPO_FILE"; chmod 644 "$REPO_FILE"
+mkdir -p "$AUTH_DIR"
+
+echo "La Official Agent Key / Download Key es proporcionada por el equipo de IBM."
+DOWNLOAD_KEY="$(read_secret 'OFFICIAL_AGENT_KEY / DOWNLOAD_KEY: ')" || runbook_fail STAN-UBU-001 "Download Key vacía."
+
+printf 'machine artifact-public.instana.io\nlogin _\npassword %s\n' "$DOWNLOAD_KEY" > "$AUTH_FILE"
+chmod 600 "$AUTH_FILE"
+
+TMP="$(mktemp)"
+cleanup(){ rm -f "$TMP"; unset DOWNLOAD_KEY; }
+trap cleanup EXIT
+
+curl --fail --silent --show-error --location --netrc-file "$AUTH_FILE" "$PUBKEY_URL" -o "$TMP" \
+  || runbook_fail STAN-UBU-002 "No se pudo descargar la clave pública del repositorio. Verifique Download Key y conectividad."
+grep -q 'BEGIN PGP PUBLIC KEY BLOCK' "$TMP" \
+  || runbook_fail STAN-UBU-003 "La respuesta del repositorio no contiene una clave PGP válida."
+
+gpg --batch --yes --dearmor --output "$KEYRING" "$TMP"
+chmod 644 "$KEYRING"
+
+printf 'deb [signed-by=%s] %s generic main\n' "$KEYRING" "$REPO_URL" > "$REPO_FILE"
+chmod 644 "$REPO_FILE"
 [[ -n "$OLD_REPO" ]] && rm -f "$OLD_REPO"
+
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y stanctl
 apt-mark hold stanctl >/dev/null
+
 stanctl --version
-unset DOWNLOAD_KEY
-echo 'STANCTL INSTALADO CORRECTAMENTE'
+runbook_warn "$AUTH_FILE contiene la Download Key y tiene permisos 600. No lo publique ni lo adjunte."
+runbook_pass "stanctl instalado y fijado con apt-mark hold."

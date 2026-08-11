@@ -1,19 +1,32 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$REPO_ROOT/common/lib/runbook.sh"
+start_phase "04-post-reboot" "04 - POST REBOOT RHEL"
+require_root
+
+VARS="$RUNBOOK_HOME/instana-vars.env"
+[[ -f "$VARS" ]] || runbook_fail POST-001 "Falta $VARS."
+source "$VARS"
+
 FAIL=0
 check(){ if eval "$2"; then echo "PASS: $1"; else echo "FAIL: $1"; FAIL=1; fi; }
-CPU=$(nproc)
-MEM_BYTES=$(( $(awk '/MemTotal/{print $2}' /proc/meminfo) * 1024 ))
-check 'CPU >=16' '(( CPU >= 16 ))'
-check 'RAM >=64 GB nominales' '(( MEM_BYTES >= 64000000000 ))'
+
+read -r REQ_CPU REQ_MEM < <(capacity_for_install_type "$INSTALL_TYPE")
+CPU="$(nproc)"
+MEM_BYTES="$(memory_bytes)"
+check "CPU >= $REQ_CPU" "(( CPU >= REQ_CPU ))"
+check "RAM suficiente para $INSTALL_TYPE" "(( MEM_BYTES >= REQ_MEM ))"
 check 'THP disabled' "grep -q '\[never\]' /sys/kernel/mm/transparent_hugepage/enabled"
 check 'Swap disabled' '! swapon --show | grep -q .'
 check 'vm.swappiness=0' "[[ \$(sysctl -n vm.swappiness) == 0 ]]"
 check 'ip_forward=1' "[[ \$(sysctl -n net.ipv4.ip_forward) == 1 ]]"
 check 'chronyd active' 'systemctl is-active --quiet chronyd'
 check '/usr/local/bin in PATH' '[[ :$PATH: == *:/usr/local/bin:* ]]'
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
 "$REPO_ROOT/common/validate-storage.sh" || FAIL=1
-[[ -f /root/instana-install/instana-vars.env ]] && "$REPO_ROOT/common/dns-check.sh" || FAIL=1
-(( FAIL == 0 )) && { echo 'RESULTADO: READY'; exit 0; } || { echo 'RESULTADO: NOT READY'; exit 1; }
+"$REPO_ROOT/common/dns-check.sh" || FAIL=1
+
+(( FAIL == 0 )) || runbook_fail POST-002 "El host no está READY después del reinicio."
+runbook_pass "Post-reboot Ubuntu READY."

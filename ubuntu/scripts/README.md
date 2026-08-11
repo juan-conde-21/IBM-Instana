@@ -1,15 +1,30 @@
-# Scripts Ubuntu
+# Scripts del runbook
 
-Estos scripts forman una secuencia. Ejecútelos únicamente desde la raíz del repositorio y en el orden documentado en [`../README.md`](../README.md).
+Ejecute siempre desde `/opt/IBM-Instana`.
 
-| Script | Función |
-|---|---|
-| `00-precheck.sh` | Valida host y prerrequisitos mínimos |
-| `01-config-vars.sh` | Define identidad, dominio y endpoints |
-| `02-prepare-ubuntu.sh` | Prepara Ubuntu y requiere reboot |
-| `03-post-reboot-check.sh` | Confirma el estado después del reinicio |
-| `04-install-stanctl.sh` | Instala `stanctl` con la clave proporcionada por IBM |
-| `05-create-env.sh` | Genera `.env` no sensible |
-| `06-install-instana.sh` | Solicita credenciales e inicia `stanctl up` en `tmux` |
+```text
+00-precheck.sh
+01-config-vars.sh
+02-prepare-<so>.sh
+03-post-reboot-check.sh
+04-install-stanctl.sh
+05-create-env.sh
+06-install-instana.sh
+```
 
-No ejecute `06-install-instana.sh` hasta que `03-post-reboot-check.sh` haya devuelto `RESULTADO: READY` y `stanctl` esté instalado.
+Todos los scripts:
+
+- usan `set -Eeuo pipefail`;
+- generan logs bajo `/root/instana-install/logs`;
+- actualizan `runbook-state.env`;
+- detienen el flujo ante errores;
+- muestran un ERROR ID cuando requieren intervención;
+- nunca habilitan `set -x`.
+
+Estado:
+
+```bash
+./common/status.sh
+```
+
+No ejecute una fase posterior si la anterior está en `FAIL`, `NOT READY` o `PENDING`.

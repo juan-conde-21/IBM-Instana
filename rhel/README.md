@@ -1,40 +1,46 @@
-# Instalación Single-Node — RHEL
+# IBM Instana Single-Node — RHEL
 
-Ruta operativa para instalar **IBM Instana Self-Hosted Standard Edition** sobre Red Hat Enterprise Linux 8/9/10.
+Runbook operativo para Red Hat Enterprise Linux 8/9/10.
 
-> Este es un camino independiente de Ubuntu. Utiliza `dnf/yum`, `firewalld`, `grubby`, `chronyd` y las consideraciones propias de RHEL.
-
-## Antes de comenzar
-
-El repositorio debe estar clonado en:
-
-```text
-/opt/IBM-Instana
-```
-
-Si todavía no lo clonó, vuelva al [`README principal`](../README.md#por-dónde-empiezo).
-
-Ejecute como `root`:
+## Punto de partida
 
 ```bash
 sudo -i
 cd /opt/IBM-Instana
 pwd
-git rev-parse --short HEAD
 ```
 
-## Secuencia rápida
+Debe estar en:
+
+```text
+/opt/IBM-Instana
+```
+
+## Secuencia
 
 ### Antes del reinicio
 
 ```bash
 ./rhel/scripts/00-precheck.sh
 ./rhel/scripts/01-config-vars.sh
-./common/prepare-storage.sh --profile poc500
-# Revise la propuesta. Solo si es correcta:
-./common/prepare-storage.sh --profile poc500 --apply
+./common/prepare-storage.sh
 ./rhel/scripts/02-prepare-rhel.sh
-reboot
+systemctl reboot
+```
+
+`prepare-storage.sh` inicia en discovery/dry-run cuando puede realizar cambios. Si propone una operación automática para una POC temporal, revísela y repita con `--apply` únicamente si corresponde.
+
+Ejemplo:
+
+```bash
+./common/prepare-storage.sh --apply
+```
+
+Si se utilizará un disco adicional vacío:
+
+```bash
+./common/prepare-storage.sh --device /dev/sdb
+./common/prepare-storage.sh --device /dev/sdb --apply
 ```
 
 ### Después del reinicio
@@ -42,48 +48,71 @@ reboot
 ```bash
 sudo -i
 cd /opt/IBM-Instana
+
 ./rhel/scripts/03-post-reboot-check.sh
 ./rhel/scripts/04-install-stanctl.sh
 ./rhel/scripts/05-create-env.sh
 ./rhel/scripts/06-install-instana.sh
 ```
 
-## Qué hace cada paso
+La última fase abre una sesión `tmux` antes de solicitar las credenciales. Puede desacoplarse durante `stanctl up` con:
 
-| Paso | Script | Objetivo | Resultado para continuar |
-|---|---|---|---|
-| 00 | `00-precheck.sh` | Valida RHEL, CPU, RAM, x86-64-v3 y conectividad | `PRECHECK: PASS` |
-| 01 | `01-config-vars.sh` | Define IP, Base Domain, Tenant y Unit | `instana-vars.env` creado |
-| 02 | `common/prepare-storage.sh` | Descubre y prepara storage | `READY` o propuesta `DRY-RUN` |
-| 03 | `02-prepare-rhel.sh` | Configura dependencias, `chronyd`, sysctl, Swap, THP y firewall | `REBOOT REQUIRED` |
-| 04 | `03-post-reboot-check.sh` | Valida el host después del reinicio | `RESULTADO: READY` |
-| 05 | `04-install-stanctl.sh` | Instala `stanctl` con la clave entregada por IBM | `STANCTL INSTALADO` |
-| 06 | `05-create-env.sh` | Genera configuración no sensible | `.env CREADO` |
-| 07 | `06-install-instana.sh` | Inicia `stanctl up` dentro de `tmux` | sesión `instana-install` iniciada |
+```text
+Ctrl+b
+d
+```
 
-## Particularidades RHEL
+y volver con:
 
-El runbook contempla específicamente:
+```bash
+tmux attach -t instana-install
+```
 
-- `dnf/yum` para paquetes y repositorios;
-- `chronyd`;
-- `firewalld` si ya está activo;
-- `grubby` para THP;
-- `/usr/local/bin` en `PATH`;
-- deshabilitación de `nm-cloud-setup` cuando está presente;
-- validación de cgroup y condiciones del host según la versión instalada.
+## Estado del runbook
+
+En cualquier momento:
+
+```bash
+./common/status.sh
+```
+
+## Qué debe ver
+
+| Fase | Resultado correcto |
+|---|---|
+| 00 Precheck | `PASS / READY` |
+| 01 Identidad | `PASS / READY` |
+| 02 Storage | `PASS / READY` |
+| 03 Preparación | `REBOOT REQUIRED` |
+| 04 Post reboot | `PASS / READY` |
+| 05 stanctl | `PASS / READY` |
+| 06 .env | `PASS / READY` |
+| 07 Instalación | `SUCCESS` |
+
+Si aparece `FAIL`, `NOT READY` o un `ERROR ID`, **no continúe**.
+
+Consulte:
+
+- [`../troubleshooting/Error-Codes.md`](../troubleshooting/Error-Codes.md)
+- [`../troubleshooting/RHEL.md`](../troubleshooting/RHEL.md)
+- [`../troubleshooting/Storage.md`](../troubleshooting/Storage.md)
+
+## Objetivo del ambiente
+
+`01-config-vars.sh` pregunta si el ambiente será:
+
+1. POC temporal.
+2. POC con posible evolución a producción.
+3. Producción.
+
+No escriba manualmente `poc` o `prod` sin revisar el objetivo. El script propone la Unit y bloquea combinaciones inseguras.
 
 ## Credenciales
 
-La **Official Agent Key / Download Key** y la **Sales Key** son proporcionadas por el equipo de IBM. No deben quedar en capturas ni archivos del repositorio.
+La **Official Agent Key / Download Key** y la **Sales Key** son proporcionadas por el equipo de IBM.
 
-## Guía detallada
+No las copie en Markdown, tickets, screenshots ni comandos visibles.
 
-Continúe en:
+## Detalle técnico
 
-[`Instalacion-SingleNode-RHEL.md`](Instalacion-SingleNode-RHEL.md)
-
-## Troubleshooting
-
-- [`../troubleshooting/RHEL.md`](../troubleshooting/RHEL.md)
-- [`../troubleshooting/Storage.md`](../troubleshooting/Storage.md)
+Consulte [`Instalacion-SingleNode-RHEL.md`](Instalacion-SingleNode-RHEL.md).

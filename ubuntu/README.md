@@ -1,105 +1,118 @@
-# Instalación Single-Node — Ubuntu
+# IBM Instana Single-Node — Ubuntu
 
-Ruta operativa para instalar **IBM Instana Self-Hosted Standard Edition** sobre Ubuntu Server 22.04/24.04.
+Runbook operativo para Ubuntu Server 22.04/24.04.
 
-> No mezcle estos comandos con el procedimiento RHEL. Si su host utiliza Red Hat Enterprise Linux, continúe en [`../rhel/README.md`](../rhel/README.md).
-
-## Antes de comenzar
-
-Este runbook asume que el repositorio ya fue clonado en:
-
-```text
-/opt/IBM-Instana
-```
-
-Si todavía no lo clonó, vuelva al [`README principal`](../README.md#por-dónde-empiezo).
-
-Todos los pasos se ejecutan como `root` y desde la raíz del repositorio:
+## Punto de partida
 
 ```bash
 sudo -i
 cd /opt/IBM-Instana
-```
-
-Compruebe su ubicación antes de continuar:
-
-```bash
 pwd
-git rev-parse --short HEAD
 ```
 
-Resultado esperado:
+Debe estar en:
 
 ```text
 /opt/IBM-Instana
-<commit-del-repositorio>
 ```
 
-## Secuencia rápida
+## Secuencia
 
 ### Antes del reinicio
 
 ```bash
 ./ubuntu/scripts/00-precheck.sh
 ./ubuntu/scripts/01-config-vars.sh
-./common/prepare-storage.sh --profile poc500
-# Revise la propuesta. Solo si es correcta:
-./common/prepare-storage.sh --profile poc500 --apply
+./common/prepare-storage.sh
 ./ubuntu/scripts/02-prepare-ubuntu.sh
-reboot
+systemctl reboot
+```
+
+`prepare-storage.sh` inicia en discovery/dry-run cuando puede realizar cambios. Si propone una operación automática para una POC temporal, revísela y repita con `--apply` únicamente si corresponde.
+
+Ejemplo:
+
+```bash
+./common/prepare-storage.sh --apply
+```
+
+Si se utilizará un disco adicional vacío:
+
+```bash
+./common/prepare-storage.sh --device /dev/sdb
+./common/prepare-storage.sh --device /dev/sdb --apply
 ```
 
 ### Después del reinicio
 
-Vuelva a conectarse por SSH y ejecute:
-
 ```bash
 sudo -i
 cd /opt/IBM-Instana
+
 ./ubuntu/scripts/03-post-reboot-check.sh
 ./ubuntu/scripts/04-install-stanctl.sh
 ./ubuntu/scripts/05-create-env.sh
 ./ubuntu/scripts/06-install-instana.sh
 ```
 
-## Qué hace cada paso
-
-| Paso | Script | Objetivo | Resultado para continuar |
-|---|---|---|---|
-| 00 | `00-precheck.sh` | Valida Ubuntu, CPU, RAM, x86-64-v3, DNS y salida HTTPS | `PRECHECK: PASS` |
-| 01 | `01-config-vars.sh` | Define IP, Base Domain, Tenant, Unit y endpoints DNS | Archivo `instana-vars.env` creado |
-| 02 | `common/prepare-storage.sh` | Descubre storage y propone una acción segura | `READY` o propuesta `DRY-RUN` |
-| 03 | `02-prepare-ubuntu.sh` | Instala dependencias y prepara Ubuntu | `REBOOT REQUIRED` |
-| 04 | `03-post-reboot-check.sh` | Confirma que los cambios sobrevivieron al reinicio | `RESULTADO: READY` |
-| 05 | `04-install-stanctl.sh` | Instala `stanctl` usando la clave entregada por IBM | `STANCTL INSTALADO CORRECTAMENTE` |
-| 06 | `05-create-env.sh` | Genera el `.env` sin credenciales | `.env CREADO` |
-| 07 | `06-install-instana.sh` | Solicita credenciales e inicia `stanctl up` en `tmux` | sesión `instana-install` iniciada |
-
-## Cuándo detenerse
-
-No continúe si aparece cualquiera de estos resultados:
+La última fase abre una sesión `tmux` antes de solicitar las credenciales. Puede desacoplarse durante `stanctl up` con:
 
 ```text
-FAIL
-ERROR
-NOT READY
+Ctrl+b
+d
 ```
 
-Tampoco continúe si el storage propuesto no coincide con lo autorizado por el cliente.
+y volver con:
+
+```bash
+tmux attach -t instana-install
+```
+
+## Estado del runbook
+
+En cualquier momento:
+
+```bash
+./common/status.sh
+```
+
+## Qué debe ver
+
+| Fase | Resultado correcto |
+|---|---|
+| 00 Precheck | `PASS / READY` |
+| 01 Identidad | `PASS / READY` |
+| 02 Storage | `PASS / READY` |
+| 03 Preparación | `REBOOT REQUIRED` |
+| 04 Post reboot | `PASS / READY` |
+| 05 stanctl | `PASS / READY` |
+| 06 .env | `PASS / READY` |
+| 07 Instalación | `SUCCESS` |
+
+Si aparece `FAIL`, `NOT READY` o un `ERROR ID`, **no continúe**.
+
+Consulte:
+
+- [`../troubleshooting/Error-Codes.md`](../troubleshooting/Error-Codes.md)
+- [`../troubleshooting/Ubuntu.md`](../troubleshooting/Ubuntu.md)
+- [`../troubleshooting/Storage.md`](../troubleshooting/Storage.md)
+
+## Objetivo del ambiente
+
+`01-config-vars.sh` pregunta si el ambiente será:
+
+1. POC temporal.
+2. POC con posible evolución a producción.
+3. Producción.
+
+No escriba manualmente `poc` o `prod` sin revisar el objetivo. El script propone la Unit y bloquea combinaciones inseguras.
 
 ## Credenciales
 
-La **Official Agent Key / Download Key** y la **Sales Key** son proporcionadas por el equipo de IBM. Los scripts las solicitan de forma interactiva y oculta.
+La **Official Agent Key / Download Key** y la **Sales Key** son proporcionadas por el equipo de IBM.
 
-No incluya estas claves en comandos, archivos Markdown, tickets o capturas de pantalla.
+No las copie en Markdown, tickets, screenshots ni comandos visibles.
 
-## Guía detallada
+## Detalle técnico
 
-Para la explicación completa, escenarios de storage, DNS, resultados esperados y recuperación post-reboot, continúe en:
-
-[`Instalacion-SingleNode-Ubuntu.md`](Instalacion-SingleNode-Ubuntu.md)
-
-## Troubleshooting
-
-- [`../troubleshooting/Ubuntu.md`](../troubleshooting/Ubuntu.md)
-- [`../troubleshooting/Storage.md`](../troubleshooting/Storage.md)
+Consulte [`Instalacion-SingleNode-Ubuntu.md`](Instalacion-SingleNode-Ubuntu.md).

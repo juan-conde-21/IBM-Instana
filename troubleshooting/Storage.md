@@ -1,8 +1,8 @@
 # Troubleshooting Storage
 
-## El script informa menos de 500 GiB
+Empiece por [`Error-Codes.md`](Error-Codes.md).
 
-Valide la capacidad real:
+## `poc500` informa menos de 500 GiB
 
 ```bash
 lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS
@@ -12,35 +12,31 @@ findmnt /mnt/instana
 df -hT /mnt/instana
 ```
 
-El perfil `poc500` requiere como base 500 GiB útiles para la POC compartida. Si no existe esa capacidad, agregue/amplíe storage antes de continuar.
-
----
+`poc500` es exclusivo de una POC temporal y exige 500 GiB útiles.
 
 ## No hay suficiente espacio libre en el VG raíz
 
-El script mostrará los discos visibles y terminará sin modificar nada.
+El script termina sin modificar nada.
 
-Si infraestructura entrega un disco adicional dedicado y vacío:
+Si infraestructura entrega un disco adicional **vacío**:
 
 ```bash
-./common/prepare-storage.sh --profile poc500 --device /dev/sdb
+./common/prepare-storage.sh --device /dev/sdb
 ```
 
-Revise la propuesta antes de usar `--apply`.
+Revise el dry-run y solo después:
 
----
+```bash
+./common/prepare-storage.sh --device /dev/sdb --apply
+```
 
-## El disco adicional contiene particiones o firmas
+## El disco contiene particiones o firmas
 
-El script lo rechazará de forma intencional.
+El rechazo es intencional.
 
-No utilice `wipefs`, `parted` o comandos destructivos hasta que infraestructura confirme que el dispositivo correcto puede inicializarse.
-
----
+No ejecute `wipefs`, `parted`, `growpart` ni `pvresize` desde este runbook. Confirme primero el dispositivo con infraestructura.
 
 ## `/mnt/instana` no quedó montado
-
-Valide:
 
 ```bash
 findmnt /mnt/instana
@@ -49,31 +45,34 @@ grep -n '/mnt/instana' /etc/fstab
 mount -a
 ```
 
-Si `mount -a` devuelve un error, corríjalo antes de continuar con la instalación.
+Corrija cualquier error de `mount -a` antes de continuar.
 
----
+## Infraestructura entrega mount points propios
 
-## El cliente entrega mount points diferentes
-
-No los mueva ni los reformatee.
-
-Declare las rutas en:
-
-```text
-/root/instana-install/storage-layout.env
-```
-
-utilizando como base:
+No los mueva, formatee ni redistribuya.
 
 ```bash
 cp common/storage-layout.env.example /root/instana-install/storage-layout.env
+vi /root/instana-install/storage-layout.env
+./common/prepare-storage.sh
 ```
 
-Después:
+El perfil se toma automáticamente del objetivo del ambiente.
+
+Para `ibm-demo` e `ibm-production`, el runbook exige fuentes separadas a nivel host y confirmación del equipo de storage sobre aislamiento físico y performance.
+
+## Benchmark oficial de storage
+
+Después de instalar `stanctl`, IBM ofrece:
 
 ```bash
-./common/prepare-storage.sh --profile poc500
-./common/validate-storage.sh
+stanctl benchmark fio
 ```
 
-El runbook trata estos puntos como storage administrado por el cliente.
+o por directorio:
+
+```bash
+stanctl benchmark fio --directory=/ruta/del/mount
+```
+
+Compare el resultado contra los IOPS y throughput vigentes para el installation type seleccionado.
