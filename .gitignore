@@ -1,0 +1,15 @@
+.env
+instana-vars.env
+storage-layout.env
+*.key
+*.pem
+*.p12
+*.jks
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+diagnostics_*.tar.gz
+stanctl-debug*
+console.log
+*.original
