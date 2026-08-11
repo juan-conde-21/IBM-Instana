@@ -23,6 +23,7 @@ EOF
 sysctl -p /etc/sysctl.d/99-stanctl.conf
 cp -a /etc/fstab "/etc/fstab.before-instana.$(date +%Y%m%d-%H%M%S)"; swapoff -a; sed -ri '/^[^#].*[[:space:]]swap[[:space:]]/s/^/# INSTANA_DISABLED_SWAP /' /etc/fstab
 grubby --args='transparent_hugepage=never' --update-kernel ALL
-if systemctl is-active --quiet firewalld; then firewall-cmd --permanent --add-port=22/tcp; firewall-cmd --permanent --add-port=80/tcp; firewall-cmd --permanent --add-port=443/tcp; firewall-cmd --permanent --add-port=8443/tcp; firewall-cmd --permanent --zone=trusted --add-source=10.42.0.0/16; firewall-cmd --permanent --zone=trusted --add-source=10.43.0.0/16; firewall-cmd --permanent --zone=trusted --add-interface=lo; firewall-cmd --reload; fi
+SSH_PORT=22; [[ -f /root/instana-install/instana-vars.env ]] && source /root/instana-install/instana-vars.env
+if systemctl is-active --quiet firewalld; then firewall-cmd --permanent --add-port="${SSH_PORT}/tcp"; firewall-cmd --permanent --add-port=80/tcp; firewall-cmd --permanent --add-port=443/tcp; firewall-cmd --permanent --add-port=8443/tcp; firewall-cmd --permanent --zone=trusted --add-source=10.42.0.0/16; firewall-cmd --permanent --zone=trusted --add-source=10.43.0.0/16; firewall-cmd --permanent --zone=trusted --add-interface=lo; firewall-cmd --reload; fi
 if systemctl list-unit-files nm-cloud-setup.service >/dev/null 2>&1; then systemctl disable --now nm-cloud-setup.service nm-cloud-setup.timer 2>/dev/null || true; fi
 echo 'PREPARACIÓN COMPLETA. REBOOT REQUIRED.'
