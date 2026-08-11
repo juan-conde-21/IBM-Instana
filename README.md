@@ -1,47 +1,37 @@
 # IBM Instana Self-Hosted — Runbooks de instalación
 
-Repositorio operativo para preparar e instalar **IBM Instana Self-Hosted Standard Edition en modalidad Single-Node**, separando el procedimiento por sistema operativo y automatizando las tareas repetitivas de validación, storage y preparación del host.
+Repositorio operativo para preparar e instalar **IBM Instana Self-Hosted Standard Edition Single-Node** sobre Ubuntu o RHEL.
 
-> **Importante**
-> Este repositorio complementa la documentación oficial de IBM. Antes de una instalación real, valide los requisitos vigentes de CPU, memoria, storage, red y versión soportada con la documentación oficial y con el equipo de IBM.
+El objetivo es que el procedimiento pueda utilizarse en una sesión real con cliente sin depender de memoria ni de comandos sueltos: cada fase valida su resultado, registra un log, actualiza el estado del runbook y, si algo falla, muestra un **ERROR ID** y detiene la secuencia.
 
-## ¿Por dónde empiezo?
+> Este repositorio complementa la documentación oficial de IBM. Antes de una instalación real, valide siempre los requisitos vigentes de CPU, memoria, storage, red y versión soportada.
 
-La forma recomendada es **clonar este repositorio directamente en el servidor Linux donde se instalará Instana**. Los scripts no se ejecutan desde Windows: Windows puede utilizarse para administrar el repositorio, pero la instalación se realiza en el host Ubuntu o RHEL.
+## Inicio rápido
 
-### 1. Ingrese al servidor Instana
+La instalación se ejecuta **en el servidor Linux que alojará Instana**, no desde Windows.
 
-Conéctese por SSH con un usuario con privilegios `sudo`.
-
-### 2. Instale Git si aún no está disponible
+### 1. Conéctese al servidor y clone el repositorio
 
 **Ubuntu**
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y git
+sudo -i
+git clone https://github.com/juan-conde-21/IBM-Instana.git /opt/IBM-Instana
+cd /opt/IBM-Instana
 ```
 
 **RHEL**
 
 ```bash
 sudo dnf install -y git
-```
-
-### 3. Clone el repositorio
-
-Se recomienda utilizar `/opt/IBM-Instana` como ruta de trabajo para que todos los comandos del runbook sean consistentes.
-
-```bash
 sudo -i
 git clone https://github.com/juan-conde-21/IBM-Instana.git /opt/IBM-Instana
 cd /opt/IBM-Instana
-git rev-parse --short HEAD
 ```
 
-A partir de este punto, **todos los comandos de instalación se ejecutan como `root` y desde `/opt/IBM-Instana`**, salvo que el runbook indique expresamente otra cosa.
-
-Si el repositorio ya fue clonado anteriormente:
+Si ya existe el repositorio:
 
 ```bash
 sudo -i
@@ -49,113 +39,209 @@ cd /opt/IBM-Instana
 git pull --ff-only origin main
 ```
 
-## Elija el sistema operativo
+Valide siempre dónde está:
 
-| Sistema operativo | Ruta principal | Cuándo usarla |
-|---|---|---|
-| Ubuntu Server 22.04 / 24.04 | [`ubuntu/README.md`](ubuntu/README.md) | Instalaciones Single-Node sobre Ubuntu |
-| Red Hat Enterprise Linux 8 / 9 / 10 | [`rhel/README.md`](rhel/README.md) | Instalaciones Single-Node sobre RHEL |
-| Componentes comunes | [`common/README.md`](common/README.md) | Storage, DNS y validaciones compartidas |
-| Troubleshooting | [`troubleshooting/README.md`](troubleshooting/README.md) | Errores conocidos y recuperación |
-| Validaciones del repositorio | [`tests/README.md`](tests/README.md) | Validación de sintaxis y controles básicos |
-| Documentación anterior | [`legacy/README.md`](legacy/README.md) | Referencia histórica, no usar como runbook principal |
+```bash
+pwd
+git rev-parse --short HEAD
+```
+
+Resultado esperado:
+
+```text
+/opt/IBM-Instana
+<commit>
+```
+
+### 2. Elija el sistema operativo
+
+| Sistema operativo | Runbook |
+|---|---|
+| Ubuntu Server 22.04 / 24.04 | [`ubuntu/README.md`](ubuntu/README.md) |
+| RHEL 8 / 9 / 10 | [`rhel/README.md`](rhel/README.md) |
+
+No mezcle comandos de Ubuntu y RHEL.
+
+## Antes de instalar: defina qué ambiente está construyendo
+
+El script `01-config-vars.sh` pregunta el objetivo del ambiente y propone la identidad adecuada.
+
+| Objetivo | Unit sugerida | Installation type inicial | Storage `poc500` |
+|---|---|---|---|
+| POC temporal | `poc` | `demo` | Permitido |
+| POC con posible evolución a producción | `prod` | `demo` | Bloqueado |
+| Producción desde el inicio | `prod` | `production` | Bloqueado |
+
+Ejemplo genérico:
+
+```text
+Organización: Empresa Demo
+Tenant:       empresa
+Unit POC:     poc
+Base Domain:  instana.example.com
+
+URL POC:
+https://poc-empresa.instana.example.com
+```
+
+Para una POC que podría convertirse en producción, la Unit recomendada es `prod` desde el inicio porque **Tenant y Unit no pueden cambiarse después de instalar Instana**.
+
+Más detalle:
+
+- [`docs/Naming-and-DNS.md`](docs/Naming-and-DNS.md)
+- [`docs/POC-to-Production.md`](docs/POC-to-Production.md)
 
 ## Flujo de instalación
-
-Ubuntu y RHEL siguen el mismo flujo conceptual. Lo que cambia es la preparación específica del sistema operativo.
 
 ```text
 00  Precheck del servidor
       ↓ PASS
-01  Definir IP, Base Domain, Tenant y Unit
-      ↓
-02  Descubrir y preparar storage
-      ↓ READY
-03  Preparar el sistema operativo
-      ↓ REBOOT
-04  Validar el host después del reinicio
-      ↓ READY
-05  Instalar stanctl
-      ↓
-06  Generar la configuración .env
-      ↓
-07  Ejecutar stanctl up
+01  Objetivo, organización, Tenant, Unit, IP y DNS
+      ↓ PASS
+02  Storage
+      ↓ PASS
+03  Preparación del sistema operativo
+      ↓ REBOOT REQUIRED
+04  Validación post-reboot
+      ↓ PASS
+05  Instalación de stanctl
+      ↓ PASS
+06  Generación de .env
+      ↓ PASS
+07  stanctl up
+      ↓ SUCCESS
 ```
 
-Cada runbook indica **qué comando ejecutar, qué resultado esperar y cuándo detenerse**. Si un paso devuelve `FAIL`, `ERROR`, `NOT READY` o un resultado diferente al documentado, no continúe con el siguiente paso hasta corregirlo.
+En cualquier momento:
 
-## Requisitos mínimos y perfil POC
+```bash
+cd /opt/IBM-Instana
+./common/status.sh
+```
 
-Los scripts de precheck validan como base operativa:
+El comando muestra lo completado, el último error y el siguiente paso.
 
-- 16 vCPU o más.
-- 64 GB de RAM o más.
-- arquitectura CPU `x86-64-v3`.
-- resolución DNS y salida HTTPS hacia los repositorios requeridos.
+## ¿Qué hago si algo falla?
 
-IBM publica requisitos adicionales y un sizing de storage superior para una instalación `demo`. Consulte siempre los [requisitos oficiales de Single-Node](https://www.ibm.com/docs/en/instana-observability?topic=cluster-system-requirements).
+Los scripts no deben continuar después de un error.
 
-### Perfil `poc500`
+Si aparece:
 
-Este repositorio incorpora un perfil **operacional de laboratorio/POC** que parte de **500 GiB útiles como mínimo para el filesystem compartido de Instana**. Es una excepción controlada para pruebas y **no sustituye el sizing ni la separación de dispositivos exigida por IBM para una arquitectura soportada**.
+```text
+RESULTADO : FAIL / NOT READY
+ERROR ID  : STO-010
+ACCION    : NO CONTINUAR con la siguiente fase.
+```
 
-Cuando el cliente entrega mount points propios, los scripts **no formatean ni redistribuyen esos volúmenes**; únicamente validan las rutas declaradas y las reutilizan.
+haga lo siguiente:
 
-## Credenciales requeridas
+1. No ejecute la siguiente fase.
+2. Anote el `ERROR ID`.
+3. Revise [`troubleshooting/Error-Codes.md`](troubleshooting/Error-Codes.md).
+4. Revise el log indicado por el script.
+5. Si necesita escalar, comparta el ERROR ID y las evidencias indicadas, **nunca las claves**.
+
+Logs:
+
+```text
+/root/instana-install/logs/
+```
+
+Para listar los últimos:
+
+```bash
+ls -ltr /root/instana-install/logs/
+```
+
+## Storage
+
+El runbook distingue tres perfiles:
+
+### `poc500`
+
+Excepción operativa para una **POC temporal**:
+
+- mínimo 500 GiB útiles;
+- puede utilizar un filesystem compartido;
+- puede usar espacio libre de un VG existente o un disco adicional vacío;
+- no representa el sizing oficial soportado por IBM.
+
+### `ibm-demo`
+
+Usado cuando una POC podría evolucionar a producción. Requiere mount points administrados y validados contra el sizing `demo` vigente de IBM.
+
+### `ibm-production`
+
+Usado para producción. Requiere mount points administrados, capacidades productivas y confirmación explícita de aislamiento físico y performance del storage.
+
+Consulte [`docs/Sizing-and-Storage.md`](docs/Sizing-and-Storage.md).
+
+## Credenciales
 
 Durante la instalación se solicitarán de forma interactiva:
 
 - **Official Agent Key / Download Key** — proporcionada por el equipo de IBM.
 - **Sales Key** — proporcionada por el equipo de IBM.
-- **Admin Password inicial** — definida para el administrador inicial de Instana.
+- **Admin Password inicial** — definida para el administrador inicial.
 
-Las credenciales no se almacenan en el repositorio. **No tome capturas de pantalla mientras las ingresa.**
+No tome capturas mientras ingresa estas credenciales.
 
-## Archivos generados en el servidor
+Las claves no se guardan en el repositorio. El script de Ubuntu mantiene la autenticación APT en un archivo local con permisos restringidos; RHEL mantiene la configuración del repositorio local con permisos restringidos. Estos archivos deben tratarse como sensibles.
 
-Durante el proceso se utilizan principalmente:
+## Archivos locales generados
 
 ```text
 /root/instana-install/instana-vars.env
-/root/instana-install/storage-layout.env   # solo si se usan mount points custom
+/root/instana-install/runbook-state.env
+/root/instana-install/storage-layout.env
 /root/instana-install/.env
+/root/instana-install/logs/
 ```
 
-Estos archivos son locales del servidor y están excluidos del repositorio mediante `.gitignore`.
+No publique esos archivos.
 
-## Reglas de seguridad
+## Estructura
 
-Nunca publique en GitHub ni adjunte sin sanitización:
+```text
+IBM-Instana/
+├── README.md
+├── ubuntu/
+├── rhel/
+├── common/
+│   ├── lib/
+│   ├── prepare-storage.sh
+│   ├── validate-storage.sh
+│   ├── dns-check.sh
+│   └── status.sh
+├── docs/
+├── troubleshooting/
+├── tests/
+└── legacy/
+```
 
-- `.env` o `instana-vars.env` reales;
-- Agent Key, Download Key o Sales Key;
-- contraseñas;
-- certificados o claves privadas;
-- dumps;
-- paquetes de soporte;
-- capturas que muestren secretos.
+## Validación del repositorio
 
-## Validar el repositorio
-
-Antes de utilizar una nueva modificación de scripts:
+Después de modificar scripts:
 
 ```bash
 cd /opt/IBM-Instana
 ./tests/validate-repo.sh
 ```
 
-El resultado esperado es:
+Resultado esperado:
 
 ```text
 VALIDATION: PASSED
 ```
 
-## Documentación oficial
+## Referencias oficiales
 
-- [IBM Instana — System requirements for a single-node deployment](https://www.ibm.com/docs/en/instana-observability?topic=cluster-system-requirements)
-- [IBM Instana — Preparing your environment](https://www.ibm.com/docs/en/instana-observability?topic=cluster-preparing)
-- [IBM Instana — Adding repository and installing stanctl](https://www.ibm.com/docs/en/instana-observability?topic=installing-adding-instana-repository-stanctl-tool)
+- [System requirements for a single-node deployment](https://www.ibm.com/docs/en/instana-observability?topic=cluster-system-requirements)
+- [Preparing for a single-node deployment](https://www.ibm.com/docs/en/instana-observability?topic=cluster-preparing)
+- [Installing Instana backend and data stores](https://www.ibm.com/docs/en/instana-observability?topic=edition-installing)
+- [Using stanctl commands](https://www.ibm.com/docs/en/instana-observability?topic=configuring-using-stanctl-commands)
+- [Adding Instana repository and installing stanctl](https://www.ibm.com/docs/en/instana-observability?topic=installing-adding-instana-repository-stanctl-tool)
 
 ---
 
-**Siguiente paso:** elija [`Ubuntu`](ubuntu/README.md) o [`RHEL`](rhel/README.md) y continúe únicamente con el runbook correspondiente a su sistema operativo.
+**Siguiente paso:** abra [`ubuntu/README.md`](ubuntu/README.md) o [`rhel/README.md`](rhel/README.md).

@@ -1,80 +1,54 @@
 # Troubleshooting Ubuntu
 
-## `NO_PUBKEY` al ejecutar APT
+Empiece por [`Error-Codes.md`](Error-Codes.md) y el ERROR ID mostrado por el script.
 
-### Síntoma
+## NO_PUBKEY / repositorio Instana
 
-APT informa que el repositorio de Instana no puede verificarse por una clave pública faltante.
-
-### Causa habitual
-
-El repositorio quedó habilitado en un intento anterior antes de instalar correctamente el keyring.
-
-### Acción
-
-Vuelva a ejecutar:
+Si falla la fase `04-install-stanctl.sh`:
 
 ```bash
 cd /opt/IBM-Instana
 ./ubuntu/scripts/04-install-stanctl.sh
 ```
 
-El script deshabilita temporalmente un repo previo, configura autenticación/keyring y recién después ejecuta `apt-get update` contra el repositorio de Instana.
+El script deshabilita temporalmente un repo anterior antes del primer `apt-get update`, configura autenticación y keyring, y luego habilita el repositorio de Instana.
 
-### Validar
+Evidencia:
 
 ```bash
 stanctl --version
+ls -l /etc/apt/sources.list.d/instana-product.list
+ls -l /usr/share/keyrings/instana-archive-keyring.gpg
 ```
 
----
+No muestre el contenido de `/etc/apt/auth.conf.d/instana.conf`.
 
-## Bash muestra únicamente `>` y no continúa
+## Bash queda en `>`
 
-### Síntoma
-
-La consola cambia al prompt secundario:
-
-```text
->
-```
-
-### Causa habitual
-
-Comillas, `\`, paréntesis o heredoc incompletos al pegar comandos multilinea.
-
-### Acción
-
-Cancele el comando incompleto:
+Cancele:
 
 ```text
 Ctrl+C
 ```
 
-Después ejecute el script correspondiente del repositorio en lugar de reconstruir manualmente el bloque.
-
----
+El prompt secundario suele indicar comillas, heredoc o continuación multilinea incompleta. Use los scripts del repositorio en lugar de reconstruir bloques largos manualmente.
 
 ## Swap vuelve después del reboot
-
-### Validar
 
 ```bash
 swapon --show
 grep -nE 'swap|swap.img' /etc/fstab
 ```
 
-### Acción
-
-Si aún existe una entrada activa de Swap, vuelva a ejecutar:
+Si continúa activo:
 
 ```bash
 cd /opt/IBM-Instana
 ./ubuntu/scripts/02-prepare-ubuntu.sh
-reboot
+systemctl reboot
 ```
 
-Después del reinicio:
+Después:
 
 ```bash
 sudo -i
@@ -82,34 +56,19 @@ cd /opt/IBM-Instana
 ./ubuntu/scripts/03-post-reboot-check.sh
 ```
 
-El resultado debe ser:
-
-```text
-RESULTADO: READY
-```
-
----
-
-## THP no aparece en `[never]`
-
-Valide:
+## THP no queda en `[never]`
 
 ```bash
 cat /sys/kernel/mm/transparent_hugepage/enabled
 grep transparent_hugepage /etc/default/grub
 ```
 
-Si la configuración permanente no está aplicada, vuelva a ejecutar `02-prepare-ubuntu.sh`, reinicie y repita el post-reboot check.
+No continúe hasta que el post-reboot check muestre `PASS`.
 
----
-
-## DNS de Instana no resuelve
-
-Ejecute:
+## DNS
 
 ```bash
-cd /opt/IBM-Instana
 ./common/dns-check.sh
 ```
 
-No continúe mientras algún FQDN devuelva una IP distinta de la configurada en `/root/instana-install/instana-vars.env`.
+Todos los FQDN deben resolver hacia la IP configurada.

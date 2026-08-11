@@ -1,55 +1,48 @@
 # Troubleshooting RHEL
 
-## `dnf` o `yum` no puede acceder al repositorio de Instana
+Empiece por [`Error-Codes.md`](Error-Codes.md) y el ERROR ID mostrado por el script.
 
-Valide primero resolución y salida HTTPS:
+## yum/dnf no accede al repositorio
 
 ```bash
 getent hosts artifact-public.instana.io
 curl -I --connect-timeout 10 https://artifact-public.instana.io
+yum repolist
 ```
 
-Después vuelva a ejecutar únicamente:
+Vuelva a ejecutar únicamente:
 
 ```bash
 cd /opt/IBM-Instana
 ./rhel/scripts/04-install-stanctl.sh
 ```
 
-La Official Agent Key / Download Key será solicitada nuevamente y debe ser proporcionada por el equipo de IBM.
+La Official Agent Key / Download Key es proporcionada por el equipo de IBM.
 
----
+No muestre el contenido de `/etc/yum.repos.d/Instana-Product.repo`, porque contiene la Download Key.
 
-## THP continúa habilitado después del reboot
-
-Valide:
+## THP continúa habilitado
 
 ```bash
 cat /sys/kernel/mm/transparent_hugepage/enabled
 grubby --info=ALL | grep -i transparent_hugepage
 ```
 
-Vuelva a ejecutar la preparación RHEL y reinicie:
+Corrija con:
 
 ```bash
 cd /opt/IBM-Instana
 ./rhel/scripts/02-prepare-rhel.sh
-reboot
+systemctl reboot
 ```
 
----
-
-## `/usr/local/bin` no aparece en PATH
-
-Valide:
+## `/usr/local/bin` no está en PATH
 
 ```bash
 echo "$PATH"
 ```
 
-Después abra una nueva sesión `root` y vuelva a ejecutar el post-reboot check.
-
----
+Abra una nueva sesión root y repita `03-post-reboot-check.sh`.
 
 ## Swap continúa activo
 
@@ -58,15 +51,10 @@ swapon --show
 grep -nE 'swap|swap.img' /etc/fstab
 ```
 
-Vuelva a ejecutar `02-prepare-rhel.sh`, reinicie y valide nuevamente.
+No continúe hasta corregirlo.
 
----
-
-## DNS de Instana no resuelve
+## DNS
 
 ```bash
-cd /opt/IBM-Instana
 ./common/dns-check.sh
 ```
-
-No continúe hasta que todos los FQDN resuelvan hacia la IP configurada.
