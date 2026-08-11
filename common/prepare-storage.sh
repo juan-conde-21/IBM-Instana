@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-MIN_BYTES=500000000000
+MIN_GIB=500
+MIN_BYTES=$((MIN_GIB * 1024 * 1024 * 1024))
 PROFILE="poc500"
 APPLY=0
 DEVICE=""
@@ -50,8 +51,8 @@ validate_custom(){
     size="$(bytes_for_path "$path")"; echo "  $v -> $path [$src]"
     if [[ -z "${seen[$src]:-}" ]]; then total=$((total + size)); seen[$src]=1; fi
   done
-  echo "Capacidad nominal agregada por filesystems únicos: $total bytes"
-  (( total >= MIN_BYTES )) || { echo "ERROR: capacidad agregada menor a 500 GB nominales."; return 1; }
+  echo "Capacidad agregada por filesystems únicos: $total bytes"
+  (( total >= MIN_BYTES )) || { echo "ERROR: capacidad agregada menor a ${MIN_GIB} GiB."; return 1; }
   echo "READY: storage administrado por el cliente. No se realizaron cambios."
 }
 
@@ -63,7 +64,7 @@ if findmnt -M "$MOUNT_ROOT" >/dev/null 2>&1; then
   echo "SCENARIO: EXISTING /mnt/instana"
   findmnt "$MOUNT_ROOT"
   echo "Capacidad: $size bytes"
-  (( size >= MIN_BYTES )) || { echo "ERROR: /mnt/instana tiene menos de 500 GB nominales."; exit 1; }
+  (( size >= MIN_BYTES )) || { echo "ERROR: /mnt/instana tiene menos de ${MIN_GIB} GiB."; exit 1; }
   if (( APPLY )); then
     mkdir -p "$MOUNT_ROOT/cluster" "$MOUNT_ROOT/stanctl/data" "$MOUNT_ROOT/stanctl/metrics" "$MOUNT_ROOT/stanctl/analytics" "$MOUNT_ROOT/stanctl/objects"
     chmod 755 "$MOUNT_ROOT" "$MOUNT_ROOT/cluster" "$MOUNT_ROOT/stanctl" "$MOUNT_ROOT/stanctl/data" "$MOUNT_ROOT/stanctl/metrics" "$MOUNT_ROOT/stanctl/analytics" "$MOUNT_ROOT/stanctl/objects"
@@ -88,7 +89,7 @@ if [[ -n "$ROOT_VG" && "$VG_FREE" =~ ^[0-9]+$ ]] && (( VG_FREE >= MIN_BYTES )); 
   echo "SCENARIO: POC-SHARED-ROOT-VG"
   echo "VG: $ROOT_VG"
   echo "Libre: $VG_FREE bytes"
-  echo "Propuesta: crear LV instana-lv usando el espacio libre, XFS y montar en $MOUNT_ROOT."
+  echo "Propuesta: crear LV instana-lv de ${MIN_GIB} GiB, XFS y montar en $MOUNT_ROOT."
   (( APPLY )) || { echo "DRY-RUN: vuelva a ejecutar con --apply para aplicar."; exit 0; }
   read -r -p "Escriba APLICAR para continuar: " CONFIRM
   [[ "$CONFIRM" == "APLICAR" ]] || { echo "Cancelado."; exit 1; }
@@ -96,13 +97,13 @@ if [[ -n "$ROOT_VG" && "$VG_FREE" =~ ^[0-9]+$ ]] && (( VG_FREE >= MIN_BYTES )); 
   if lvs "$ROOT_VG/instana-lv" >/dev/null 2>&1; then
     LV_PATH="/dev/$ROOT_VG/instana-lv"
   else
-    lvcreate -l 100%FREE -n instana-lv "$ROOT_VG"
+    lvcreate -L "${MIN_GIB}G" -n instana-lv "$ROOT_VG"
     LV_PATH="/dev/$ROOT_VG/instana-lv"
   fi
   if ! blkid "$LV_PATH" >/dev/null 2>&1; then mkfs.xfs -f -i size=1024 -L instana-data "$LV_PATH"; fi
 else
   if [[ -z "$DEVICE" ]]; then
-    echo "No hay >=500 GB nominales libres en el VG raíz y /mnt/instana no está montado."
+    echo "No hay >=${MIN_GIB} GiB libres en el VG raíz y /mnt/instana no está montado."
     echo "Discos visibles:"
     lsblk -dpno NAME,SIZE,TYPE,MODEL
     echo "Si existe un disco adicional VACÍO, vuelva a ejecutar con --device /dev/<disco>."
@@ -110,7 +111,7 @@ else
   fi
   [[ -b "$DEVICE" ]] || { echo "ERROR: $DEVICE no es un dispositivo de bloque."; exit 1; }
   SIZE="$(lsblk -bdno SIZE "$DEVICE" | head -1)"
-  (( SIZE >= MIN_BYTES )) || { echo "ERROR: $DEVICE tiene menos de 500 GB nominales."; exit 1; }
+  (( SIZE >= MIN_BYTES )) || { echo "ERROR: $DEVICE tiene menos de ${MIN_GIB} GiB."; exit 1; }
   CHILDREN="$(lsblk -nr "$DEVICE" | wc -l)"
   (( CHILDREN == 1 )) || { echo "ERROR: $DEVICE contiene particiones/children. No se modificará."; exit 1; }
   if wipefs -n "$DEVICE" 2>/dev/null | grep -q .; then echo "ERROR: $DEVICE contiene firmas. No se modificará."; exit 1; fi
